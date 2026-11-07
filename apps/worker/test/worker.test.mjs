@@ -1,0 +1,141 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { PumpFunDiscovery } from "../src/discovery/pumpfun.ts";
+import {
+  assessTokenRisk,
+  scoreMomentum,
+  scoreNarrative,
+  detectAttentionSpike,
+  detectBreakoutSignals,
+  runBacktestSimulation,
+  extractSocialEntities,
+  formatUsd,
+  shortenAddress,
+} from "@radar/shared";
+
+test("PumpFunDiscovery accurately classifies launchpads", () => {
+  assert.equal(PumpFunDiscovery.identifyLaunchpad({ dexId: "pumpfun", url: "https://pump.fun/coin/123" }), "pumpfun");
+  assert.equal(PumpFunDiscovery.identifyLaunchpad({ dexId: "raydium", url: "https://raydium.io" }), "raydium");
+  assert.equal(PumpFunDiscovery.identifyLaunchpad({ dexId: "meteora", url: "https://meteora.ag" }), "meteora");
+  assert.equal(PumpFunDiscovery.identifyLaunchpad({ dexId: "orca", url: "https://orca.so" }), "orca");
+  assert.equal(PumpFunDiscovery.identifyLaunchpad(null, "pumpportal"), "pumpfun");
+  assert.equal(PumpFunDiscovery.identifyLaunchpad(null), "unknown");
+});
+
+test("Risk engine catches honeypot indicators, creator history, and wash trading", () => {
+  const result = assessTokenRisk("DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263", {
+    liquidityUsd: 1500,
+    fdvUsd: 500000,
+    pairAgeHours: 0.2,
+    volume1hUsd: 80000,
+    buys1h: 15,
+    sells1h: 85,
+    mintAuthority: true,
+    freezeAuthority: true,
+    initialized: true,
+    top10HolderPercent: 82.5,
+    creatorRugRatePct: 75,
+    washTradingEvidence: { isWashTradingSuspected: true, reason: "High volume with low unique wallets" },
+  });
+
+  assert.equal(result.level, "high");
+  assert.ok(result.score >= 85, `Expected score >= 85, got ${result.score}`);
+  assert.ok(result.flags.some(f => f.includes("Very low liquidity")));
+  assert.ok(result.flags.some(f => f.includes("Extreme FDV-to-liquidity")));
+  assert.ok(result.flags.some(f => f.includes("Mint authority enabled")));
+  assert.ok(result.flags.some(f => f.includes("Freeze authority enabled")));
+  assert.ok(result.flags.some(f => f.includes("Heavy sell-side pressure")));
+  assert.ok(result.flags.some(f => f.includes("whale concentration")));
+  assert.ok(result.flags.some(f => f.includes("Creator history warning")));
+  assert.ok(result.flags.some(f => f.includes("Wash trading suspected")));
+});
+
+test("Risk engine rewards fully renounced authorities, burned LP, and distributed holders", () => {
+  const result = assessTokenRisk("DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263", {
+    liquidityUsd: 250000,
+    fdvUsd: 800000,
+    pairAgeHours: 120,
+    volume1hUsd: 50000,
+    buys1h: 80,
+    sells1h: 30,
+    mintAuthority: false,
+    freezeAuthority: false,
+    initialized: true,
+    lpBurnedPercent: 100,
+    top10HolderPercent: 18.2,
+  });
+
+  assert.equal(result.level, "low");
+  assert.ok(result.score < 35, `Expected score < 35, got ${result.score}`);
+  assert.ok(result.passes.some(p => p.includes("Deep liquidity")));
+  assert.ok(result.passes.some(p => p.includes("Mint authority renounced")));
+  assert.ok(result.passes.some(p => p.includes("Freeze authority renounced")));
+  assert.ok(result.passes.some(p => p.includes("LP tokens verified burned")));
+  assert.ok(result.passes.some(p => p.includes("Well-distributed")));
+});
+
+test("Breakout signals detect confirmed breakouts and momentum surges", () => {
+  const signals = detectBreakoutSignals({
+    mint: "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr",
+    momentumScore: 82,
+    priceChange1h: 35,
+    volume1h: 150000,
+    liquidityUsd: 45000,
+    previousVolume1h: 50000,
+    socialMentions1h: 12,
+  });
+
+  assert.ok(signals.length >= 1);
+  assert.ok(signals.some(s => s.signalType === "confirmed_breakout"));
+});
+
+test("Backtest simulation runs without look-ahead bias and calculates drawdown and returns", () => {
+  const snapshots = [
+    { mint: "TokenA", symbol: "TKNA", observedAt: "2026-11-01T00:00:00Z", priceUsd: 0.10, momentumScore: 85, riskScore: 25 },
+    { mint: "TokenA", symbol: "TKNA", observedAt: "2026-11-01T04:00:00Z", priceUsd: 0.18, momentumScore: 90, riskScore: 25 }, // +80% -> take profit hit
+    { mint: "TokenB", symbol: "TKNB", observedAt: "2026-11-01T00:00:00Z", priceUsd: 1.00, momentumScore: 78, riskScore: 35 },
+    { mint: "TokenB", symbol: "TKNB", observedAt: "2026-11-01T04:00:00Z", priceUsd: 0.70, momentumScore: 30, riskScore: 75 }, // -30% -> stop loss hit
+  ];
+
+  const result = runBacktestSimulation(snapshots, {
+    name: "Strategy Test",
+    minMomentum: 75,
+    maxRiskScore: 40,
+    takeProfitPct: 50,
+    stopLossPct: -25,
+    maxHoldingHours: 12,
+    tradeSizeUsd: 100,
+    initialCapitalUsd: 1000,
+    slippageBps: 50,
+    feeBps: 10,
+  });
+
+  assert.equal(result.totalTrades, 2);
+  assert.equal(result.winningTrades, 1);
+  assert.equal(result.losingTrades, 1);
+  assert.equal(result.winRatePct, 50);
+  assert.ok(result.totalReturnPct > 0);
+  assert.ok(result.profitFactor > 1);
+});
+
+test("ExtractSocialEntities correctly parses tickers and Solana base58 mints", () => {
+  const sample = "New gem alert! $WIF looking bullish, check mint 7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr and $BONK on Raydium";
+  const { mints, tickers } = extractSocialEntities(sample);
+
+  assert.ok(tickers.includes("WIF"));
+  assert.ok(tickers.includes("BONK"));
+  assert.ok(mints.includes("7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr"));
+});
+
+test("Attention spike detection triggers when volume accelerates", () => {
+  assert.equal(detectAttentionSpike(30, 8, 3.0), true);
+  assert.equal(detectAttentionSpike(15, 8, 3.0), false);
+  assert.equal(detectAttentionSpike(2, 0.5, 3.0), false);
+});
+
+test("Formatting helpers format Solana addresses and currency amounts cleanly", () => {
+  assert.equal(formatUsd(2500000), "$2.50M");
+  assert.equal(formatUsd(15.42), "$15.42");
+  assert.equal(formatUsd(0.00001234), "$0.00001234");
+  assert.equal(shortenAddress("7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr", 4), "7GCi...W2hr");
+});

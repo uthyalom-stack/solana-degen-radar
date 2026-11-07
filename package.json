@@ -1,0 +1,22 @@
+{
+  "name": "solana-degen-radar",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace @radar/web",
+    "dev:worker": "npm run dev --workspace @radar/worker",
+    "build": "npm run build --workspace @radar/web && npm run build --workspace @radar/worker",
+    "typecheck": "npm run build --workspace @radar/shared && npm run typecheck --workspace @radar/web && npm run typecheck --workspace @radar/worker",
+    "test": "npm run test --workspace @radar/shared && npm run test --workspace @radar/worker",
+    "preview": "npm run preview --workspace @radar/web",
+    "deploy:web": "npm run deploy --workspace @radar/web",
+    "deploy:worker": "npm run deploy --workspace @radar/worker"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
