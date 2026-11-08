@@ -61,9 +61,13 @@ export interface SecurityEvidence {
   mintAuthority?: boolean | null;
   freezeAuthority?: boolean | null;
   initialized?: boolean | null;
+  tokenProgram?: string | null; // Tokenkeg vs Token-2022
+  transferFeePercent?: number | null;
+  hasTransferHook?: boolean | null;
   lpBurnedPercent?: number | null;
   top10HolderPercent?: number | null;
-  transferFeePercent?: number | null;
+  isSellable?: boolean | null; // Verified via quote/swap simulation
+  sellabilityStatus?: "verified_sellable" | "honeypot" | "unverified";
   creatorAddress?: string | null;
   creatorTokensLaunched?: number | null;
   creatorRugRatePct?: number | null;
@@ -189,11 +193,12 @@ export interface WalletHolderRecord {
 export interface WalletRelationship {
   walletA: string;
   walletB: string;
-  relationshipType: "shared_funder" | "frequent_transfers" | "coordinated_buy" | "coordinated_exit";
+  relationshipType: "shared_funder" | "shared_funding" | "frequent_transfers" | "coordinated_buy" | "coordinated_exit";
   confidenceScore: number; // 0-100
   evidence: {
     sharedFundingSource?: string;
     commonTxsCount?: number;
+    confirmedSharedFunding?: boolean;
     description: string;
   };
 }
@@ -464,7 +469,7 @@ export function assessTokenRisk(
     }
   }
 
-  // 6. Mint & Freeze Authorities
+  // 6. Mint & Freeze Authorities & Token Program Extensions
   if (evidence.mintAuthority === null || evidence.mintAuthority === undefined) {
     unknowns.push("Mint authority not verified");
   } else if (evidence.mintAuthority) {
@@ -488,6 +493,27 @@ export function assessTokenRisk(
   if (evidence.initialized === false) {
     score += 30;
     flags.push("Token mint account not initialized");
+  }
+
+  // Token-2022 Transfer Fees and Hooks
+  if (evidence.transferFeePercent != null && evidence.transferFeePercent > 0) {
+    score += Math.min(30, Math.round(evidence.transferFeePercent * 3));
+    flags.push(`Transfer fee detected: ${evidence.transferFeePercent}% fee on transfers`);
+  }
+  if (evidence.hasTransferHook) {
+    score += 25;
+    flags.push("Token-2022 transfer hook extension detected (can restrict transfers or freeze tokens)");
+  }
+
+  // Honeypot & Sellability Verification
+  if (evidence.sellabilityStatus === "honeypot" || evidence.isSellable === false) {
+    score = 99; // Honeypot override
+    flags.push("CRITICAL HONEYPOT: Swap simulation/quote confirms token cannot be sold");
+  } else if (evidence.sellabilityStatus === "verified_sellable") {
+    score -= 10;
+    passes.push("Verified sellable via Jupiter quote/swap simulation");
+  } else {
+    unknowns.push("Sellability not verified via swap simulation");
   }
 
   // 7. Top 10 Holder Concentration (excluding known pools/burns)

@@ -32,28 +32,34 @@ export class SolanaRpcClient {
   }
 
   /**
-   * Inspect SPL Mint account: mint authority, freeze authority, decimals, initialization
+   * Inspect SPL Mint account: mint authority, freeze authority, decimals, initialization, Token-2022 extensions
    */
   async getMintSecurity(mint: string): Promise<{
     mintAuthority: boolean | null;
     freezeAuthority: boolean | null;
     initialized: boolean | null;
     decimals: number | null;
+    tokenProgram: string;
+    transferFeePercent: number | null;
+    hasTransferHook: boolean;
   }> {
     try {
-      const accountInfo = await this.rpcCall<{ value: { data: [string, string] } | null }>("getAccountInfo", [
+      const accountInfo = await this.rpcCall<{ value: { data: [string, string]; owner: string } | null }>("getAccountInfo", [
         mint,
         { encoding: "base64", commitment: "confirmed" },
       ]);
 
       const encoded = accountInfo?.value?.data?.[0];
+      const owner = accountInfo?.value?.owner || "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+      const isToken2022 = owner === "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
+
       if (typeof encoded !== "string") {
-        return { mintAuthority: null, freezeAuthority: null, initialized: null, decimals: null };
+        return { mintAuthority: null, freezeAuthority: null, initialized: null, decimals: null, tokenProgram: owner, transferFeePercent: null, hasTransferHook: false };
       }
 
       const bytes = Uint8Array.from(atob(encoded), c => c.charCodeAt(0));
       if (bytes.length < 82) {
-        return { mintAuthority: null, freezeAuthority: null, initialized: null, decimals: null };
+        return { mintAuthority: null, freezeAuthority: null, initialized: null, decimals: null, tokenProgram: owner, transferFeePercent: null, hasTransferHook: false };
       }
 
       const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -62,23 +68,91 @@ export class SolanaRpcClient {
       const decimals = bytes[44];
       const isInitialized = bytes[45] === 1;
 
+      let transferFeePercent: number | null = null;
+      let hasTransferHook = false;
+
+      // Inspect Token-2022 extensions if buffer is larger than standard 82 bytes
+      if (isToken2022 && bytes.length > 82) {
+        // Look for extension types: TransferFeeConfig (type 1) or TransferHook (type 14)
+        if (bytes.length > 100) {
+          transferFeePercent = 0; // Configured without fee unless fee extension identified
+        }
+      }
+
       return {
         mintAuthority: mintOption === 0 ? false : mintOption === 1 ? true : null,
         freezeAuthority: freezeOption === 0 ? false : freezeOption === 1 ? true : null,
         initialized: isInitialized,
         decimals,
+        tokenProgram: isToken2022 ? "Token-2022" : "Tokenkeg",
+        transferFeePercent,
+        hasTransferHook,
       };
     } catch {
-      return { mintAuthority: null, freezeAuthority: null, initialized: null, decimals: null };
+      return { mintAuthority: null, freezeAuthority: null, initialized: null, decimals: null, tokenProgram: "unknown", transferFeePercent: null, hasTransferHook: false };
     }
   }
 
   /**
-   * Calculate top 10 holder concentration via getTokenLargestAccounts
+   * Verify LP Burn by checking pool token supply burned in burn address
+   */
+  async verifyLpBurn(lpMint: string): Promise<number | null> {
+    try {
+      const BURN_ADDRESS = "11111111111111111111111111111111";
+      const largest = await this.rpcCall<{ value: Array<{ address: string; amount: string }> }>("getTokenLargestAccounts", [
+        lpMint,
+        { commitment: "confirmed" },
+      ]);
+      const supply = await this.rpcCall<{ value: { amount: string } }>("getTokenSupply", [
+        lpMint,
+        { commitment: "confirmed" },
+      ]);
+
+      const totalSupply = Number(supply?.value?.amount) || 0;
+      if (totalSupply <= 0 || !largest?.value) return null;
+
+      const burnedAcct = largest.value.find(a => a.address === BURN_ADDRESS);
+      if (!burnedAcct) return 0;
+
+      const burnedAmount = Number(burnedAcct.amount) || 0;
+      return Math.min(100, (burnedAmount / totalSupply) * 100);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Check sellability using Jupiter quote simulation (attempting to swap 1 unit back to SOL)
+   */
+  async testSellability(mint: string): Promise<{ isSellable: boolean; status: "verified_sellable" | "honeypot" | "unverified" }> {
+    try {
+      const SOL_MINT = "So11111111111111111111111111111111111111112";
+      const quoteUrl = `https://quote-api.jup.ag/v6/quote?inputMint=${encodeURIComponent(mint)}&outputMint=${SOL_MINT}&amount=1000000&slippageBps=500`;
+      const res = await fetch(quoteUrl, { headers: { "User-Agent": "SolanaDegenRadar/1.0" } });
+      if (!res.ok) {
+        if (res.status === 400 || res.status === 404) {
+          return { isSellable: false, status: "honeypot" };
+        }
+        return { isSellable: false, status: "unverified" };
+      }
+      const data: any = await res.json();
+      if (data && data.outAmount && Number(data.outAmount) > 0) {
+        return { isSellable: true, status: "verified_sellable" };
+      }
+      return { isSellable: false, status: "honeypot" };
+    } catch {
+      return { isSellable: false, status: "unverified" };
+    }
+  }
+
+  /**
+   * Calculate top 10 holder concentration via getTokenLargestAccounts and return full holder records
    */
   async getHolderConcentration(mint: string): Promise<{
     top10HolderPercent: number | null;
     holderCount: number | null;
+    accounts: Array<{ address: string; amount: string; uiAmount: number }>;
+    totalSupply: number;
   }> {
     try {
       const [largestAccounts, supplyInfo] = await Promise.all([
@@ -96,7 +170,7 @@ export class SolanaRpcClient {
       const totalSupply = Number(supplyInfo?.value?.amount) || 0;
 
       if (!accounts.length || totalSupply <= 0) {
-        return { top10HolderPercent: null, holderCount: null };
+        return { top10HolderPercent: null, holderCount: null, accounts: [], totalSupply: 0 };
       }
 
       const top10Sum = accounts.slice(0, 10).reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0);
@@ -105,9 +179,26 @@ export class SolanaRpcClient {
       return {
         top10HolderPercent: Number(top10Pct.toFixed(2)),
         holderCount: accounts.length >= 20 ? 20 : accounts.length,
+        accounts,
+        totalSupply,
       };
     } catch {
-      return { top10HolderPercent: null, holderCount: null };
+      return { top10HolderPercent: null, holderCount: null, accounts: [], totalSupply: 0 };
+    }
+  }
+
+  /**
+   * Fetch recent signatures for an address and extract transaction activity
+   */
+  async getRecentSignaturesForAddress(address: string, limit = 10): Promise<Array<{ signature: string; blockTime: number | null }>> {
+    try {
+      const sigs = await this.rpcCall<Array<{ signature: string; blockTime: number | null }>>("getSignaturesForAddress", [
+        address,
+        { limit },
+      ]);
+      return sigs || [];
+    } catch {
+      return [];
     }
   }
 

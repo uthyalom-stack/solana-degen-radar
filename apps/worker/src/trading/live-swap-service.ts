@@ -3,7 +3,73 @@ import type { LiveTransactionRecord } from "@radar/shared";
 
 export class LiveSwapService {
   /**
-   * Request live Jupiter quote
+   * Get dynamic decimals for token mint via RPC
+   */
+  static async getMintDecimals(env: Env, mint: string): Promise<number> {
+    if (mint === "So11111111111111111111111111111111111111112") return 9; // SOL has 9 decimals
+    const rpcUrl = env.HELIUS_API_KEY
+      ? `https://mainnet.helius-rpc.com/?api-key=${env.HELIUS_API_KEY}`
+      : (env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com");
+
+    try {
+      const res = await fetch(rpcUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "getTokenSupply",
+          params: [mint, { commitment: "confirmed" }],
+        }),
+      });
+      const data: any = await res.json();
+      return data?.result?.value?.decimals ?? 6;
+    } catch {
+      return 6; // Fallback to 6 decimals if RPC unreachable
+    }
+  }
+
+  /**
+   * Fetch SPL token balances for a wallet
+   */
+  static async getWalletSplBalances(env: Env, walletAddress: string): Promise<Array<{ mint: string; amount: string; decimals: number; uiAmount: number }>> {
+    const rpcUrl = env.HELIUS_API_KEY
+      ? `https://mainnet.helius-rpc.com/?api-key=${env.HELIUS_API_KEY}`
+      : (env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com");
+
+    try {
+      const res = await fetch(rpcUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "getTokenAccountsByOwner",
+          params: [
+            walletAddress,
+            { programId: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" },
+            { encoding: "jsonParsed", commitment: "confirmed" },
+          ],
+        }),
+      });
+      const data: any = await res.json();
+      const accounts = data?.result?.value || [];
+      return accounts.map((a: any) => {
+        const info = a.account?.data?.parsed?.info;
+        return {
+          mint: info?.mint,
+          amount: info?.tokenAmount?.amount || "0",
+          decimals: info?.tokenAmount?.decimals || 6,
+          uiAmount: info?.tokenAmount?.uiAmount || 0,
+        };
+      });
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Request live Jupiter quote with dynamic decimal support
    */
   static async getQuote(
     inputMint: string,

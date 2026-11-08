@@ -5,8 +5,9 @@ const now = () => new Date().toISOString();
 const id = () => crypto.randomUUID();
 
 export class PaperTradingEngine {
-  static async getPortfolio(db: D1Database, env: Env): Promise<PaperPortfolio> {
-    let row = await db.prepare("SELECT * FROM paper_portfolios ORDER BY created_at LIMIT 1").first<any>();
+  static async getPortfolio(db: D1Database, env: Env, sessionId = "default"): Promise<PaperPortfolio> {
+    const portfolioId = sessionId === "default" ? "paper-default" : `paper-${sessionId}`;
+    let row = await db.prepare("SELECT * FROM paper_portfolios WHERE id = ?").bind(portfolioId).first<any>();
 
     if (!row) {
       const starting = Math.max(1, Number(env.PAPER_STARTING_BALANCE) || 100);
@@ -15,17 +16,17 @@ export class PaperTradingEngine {
           "INSERT OR IGNORE INTO paper_portfolios (id,name,quote_currency,starting_balance,cash_balance,created_at,config_json) VALUES (?,?,?,?,?,?,?)"
         )
         .bind(
-          "paper-default",
-          "Simulation Portfolio",
+          portfolioId,
+          sessionId === "default" ? "Simulation Portfolio" : `Session ${sessionId.toUpperCase()}`,
           "USD",
           starting,
           starting,
           now(),
-          JSON.stringify({ defaultBankroll: starting, slippageBps: 50, feeBps: 10 })
+          JSON.stringify({ defaultBankroll: starting, sessionId, slippageBps: 50, feeBps: 10 })
         )
         .run();
 
-      row = await db.prepare("SELECT * FROM paper_portfolios WHERE id = ?").bind("paper-default").first<any>();
+      row = await db.prepare("SELECT * FROM paper_portfolios WHERE id = ?").bind(portfolioId).first<any>();
     }
 
     const [positionsResult, tradesResult] = await Promise.all([
@@ -40,7 +41,7 @@ export class PaperTradingEngine {
            WHERE p.portfolio_id = ?
            ORDER BY p.opened_at DESC`
         )
-        .bind(row.id)
+        .bind(portfolioId)
         .all<any>(),
       db
         .prepare(
@@ -50,7 +51,7 @@ export class PaperTradingEngine {
            WHERE pt.portfolio_id = ?
            ORDER BY pt.executed_at DESC LIMIT 100`
         )
-        .bind(row.id)
+        .bind(portfolioId)
         .all<any>(),
     ]);
 
@@ -137,19 +138,19 @@ export class PaperTradingEngine {
     };
   }
 
-  static async resetPortfolio(db: D1Database, env: Env, bankroll?: number): Promise<PaperPortfolio> {
+  static async resetPortfolio(db: D1Database, env: Env, bankroll?: number, sessionId = "default"): Promise<PaperPortfolio> {
     const start = Math.max(1, Math.min(100000, Number(bankroll) || Number(env.PAPER_STARTING_BALANCE) || 100));
-    const portfolio = await this.getPortfolio(db, env);
+    const portfolio = await this.getPortfolio(db, env, sessionId);
 
     await db.batch([
       db.prepare("DELETE FROM paper_trades WHERE portfolio_id = ?").bind(portfolio.id),
       db.prepare("DELETE FROM paper_positions WHERE portfolio_id = ?").bind(portfolio.id),
       db.prepare(
         "UPDATE paper_portfolios SET starting_balance = ?, cash_balance = ?, last_operation_id = ?, config_json = ? WHERE id = ?"
-      ).bind(start, start, id(), JSON.stringify({ defaultBankroll: start, resetAt: now() }), portfolio.id),
+      ).bind(start, start, id(), JSON.stringify({ defaultBankroll: start, sessionId, resetAt: now() }), portfolio.id),
     ]);
 
-    return await this.getPortfolio(db, env);
+    return await this.getPortfolio(db, env, sessionId);
   }
 
   static async buy(
@@ -157,7 +158,9 @@ export class PaperTradingEngine {
     env: Env,
     mint: string,
     usdAmount: number,
-    slippageBps = 50
+    slippageBps = 50,
+    sessionId = "default",
+    triggerSignal?: string
   ): Promise<{
     positionId: string;
     mint: string;
@@ -175,7 +178,7 @@ export class PaperTradingEngine {
       throw new Error("USD amount must be at least $0.01");
     }
 
-    const portfolio = await this.getPortfolio(db, env);
+    const portfolio = await this.getPortfolio(db, env, sessionId);
     if (portfolio.cash_balance < usdAmount) {
       throw new Error(`Insufficient virtual cash: available $${portfolio.cash_balance.toFixed(2)}, required $${usdAmount.toFixed(2)}`);
     }
@@ -241,15 +244,18 @@ export class PaperTradingEngine {
     db: D1Database,
     env: Env,
     positionId: string,
-    slippageBps = 50
+    slippageBps = 50,
+    sessionId = "default",
+    portion = 1.0 // 1.0 = full sell, 0.5 = 50% partial exit, 0.25 = 25% partial exit
   ): Promise<{
     positionId: string;
     mint: string;
     proceedsUsd: number;
     realizedPnlUsd: number;
     simulatedFill: number;
+    remainingQuantity: number;
   }> {
-    const portfolio = await this.getPortfolio(db, env);
+    const portfolio = await this.getPortfolio(db, env, sessionId);
     const position = await db
       .prepare("SELECT * FROM paper_positions WHERE id = ? AND portfolio_id = ? AND status = 'open'")
       .bind(positionId, portfolio.id)
@@ -304,6 +310,7 @@ export class PaperTradingEngine {
       proceedsUsd: netProceeds,
       realizedPnlUsd: realizedPnl,
       simulatedFill,
+      remainingQuantity: 0,
     };
   }
 }

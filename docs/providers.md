@@ -14,6 +14,7 @@ Provider-specific ingestion is implemented in the Worker. Keep each source expli
 | TikTok | Trend discovery | Research/Discovery access is restricted; do not scrape around access controls |
 | Telegram | Public channel signals | Only ingest channels and data the operator is permitted to access |
 | RSS/news | Public trend signals | HTTPS RSS/Atom polling is implemented; respect publisher terms and attribution |
+| Spotify Web Playback | Ambient music player while trading | Requires Spotify Developer application Client ID, user OAuth authorization with PKCE, and active Spotify Premium subscription for Web Playback SDK streaming. Non-premium accounts can control external playback via Web API |
 
 Unavailable providers must report `disabled` or `unavailable`; the system must not fabricate observations.
 
@@ -28,3 +29,9 @@ Unavailable providers must report `disabled` or `unavailable`; the system must n
 - Pump.fun official Developer API, X API, Reddit API, and TikTok API: not connected. Reddit RSS feeds are supported through the generic RSS adapter.
 
 PumpPortal real-time feed documentation: https://pumpportal.fun/data-api/real-time/. Official Pump.fun developer docs: https://docs.pump.fun/ and API terms: https://docs.pump.fun/terms/. The API is approved-organisation-only and read-only; it does not provide token market/price data. Review current terms before enabling any integration.
+
+## Spotify Player Integration Details
+The trading terminal includes a client-side Spotify music player integration in the Settings and bottom utility drawer.
+- **Client-Side OAuth (PKCE):** Users supply their public Spotify Client ID in Terminal Settings to initiate authorization against `accounts.spotify.com/authorize` with scopes `streaming user-read-email user-read-private user-modify-playback-state user-read-playback-state`.
+- **Premium Constraint:** Audio streaming directly in the browser via Spotify's Web Playback SDK strictly requires an active Spotify Premium subscription according to Spotify developer terms.
+- **Fallback Mode:** For non-premium users, the integration controls active external Spotify sessions (desktop client, mobile app, or Spotify Connect devices) via the Spotify Web API.
