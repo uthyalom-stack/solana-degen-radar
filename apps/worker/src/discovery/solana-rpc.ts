@@ -42,6 +42,11 @@ export class SolanaRpcClient {
     tokenProgram: string;
     transferFeePercent: number | null;
     hasTransferHook: boolean;
+    hasPermanentDelegate?: boolean;
+    hasNonTransferable?: boolean;
+    defaultAccountState?: string | null;
+    detectedExtensions?: string[];
+    unknownExtensions?: number[];
   }> {
     try {
       const accountInfo = await this.rpcCall<{ value: { data: [string, string]; owner: string } | null }>("getAccountInfo", [
@@ -70,13 +75,19 @@ export class SolanaRpcClient {
 
       let transferFeePercent: number | null = null;
       let hasTransferHook = false;
+      let hasPermanentDelegate = false;
+      let hasNonTransferable = false;
+      let defaultAccountState: string | null = null;
+      const detectedExtensions: string[] = [];
+      const unknownExtensions: number[] = [];
 
-      // Official Token-2022 Mint binary layout:
-      // Base mint: 82 bytes (offset 0..81)
-      // Account type tag: 1 byte at offset 82 (value 1 for Mint)
-      // Alignment padding to 4-byte boundary: offset 84 starts the extension TLV entries
-      if (isToken2022 && bytes.length > 82) {
-        let offset = bytes.length >= 84 ? 84 : 82;
+      // Official SPL Token-2022 Mint binary layout:
+      // Base mint struct: 82 bytes (offset 0..81)
+      // Padded to base account size: bytes 0..164 (165 bytes total account size in Tokenkeg)
+      // Account type tag: 1 byte at byte 165 (value 1 for Mint)
+      // Extension TLV entries begin strictly at byte 166.
+      if (isToken2022 && bytes.length >= 170) {
+        let offset = 166;
         while (offset + 4 <= bytes.length) {
           const extType = view.getUint16(offset, true);
           const extLen = view.getUint16(offset + 2, true);
@@ -84,27 +95,46 @@ export class SolanaRpcClient {
 
           if (dataStart + extLen > bytes.length) break;
 
-          // Type 1: TransferFeeConfig (official spl-token-2022 layout)
-          // 0..31: transfer_fee_config_authority (32 bytes)
-          // 32..63: withdraw_withheld_authority (32 bytes)
-          // 64..71: withheld_amount (8 bytes uint64)
-          // 72..89: older_transfer_fee (epoch:8, max_fee:8, transfer_fee_basis_points:2) -> 18 bytes
-          // 90..107: newer_transfer_fee (epoch:8, max_fee:8, transfer_fee_basis_points:2) -> 18 bytes
-          // newer_transfer_fee.transfer_fee_basis_points is at dataStart + 106
-          if (extType === 1 && extLen >= 108) {
-            const feeBps = view.getUint16(dataStart + 106, true);
-            transferFeePercent = feeBps / 100;
-          } else if (extType === 1 && extLen >= 90) {
-            // Older fee fallback if newer fee not reached
-            const feeBps = view.getUint16(dataStart + 88, true);
-            transferFeePercent = feeBps / 100;
-          }
-
-          // Type 14: TransferHook (official spl-token-2022 layout)
-          // 0..31: authority (32 bytes)
-          // 32..63: program_id (32 bytes)
-          if (extType === 14 && extLen >= 64) {
-            hasTransferHook = true;
+          switch (extType) {
+            case 1: { // TransferFeeConfig
+              detectedExtensions.push("TransferFeeConfig");
+              if (extLen >= 108) {
+                const feeBps = view.getUint16(dataStart + 106, true);
+                transferFeePercent = feeBps / 100;
+              } else if (extLen >= 90) {
+                const feeBps = view.getUint16(dataStart + 88, true);
+                transferFeePercent = feeBps / 100;
+              }
+              break;
+            }
+            case 2: { // DefaultAccountState
+              detectedExtensions.push("DefaultAccountState");
+              const stateByte = bytes[dataStart];
+              defaultAccountState = stateByte === 1 ? "uninitialized" : stateByte === 2 ? "initialized" : stateByte === 3 ? "frozen" : "unknown";
+              break;
+            }
+            case 3: { // PermanentDelegate
+              detectedExtensions.push("PermanentDelegate");
+              hasPermanentDelegate = true;
+              break;
+            }
+            case 9: { // NonTransferable
+              detectedExtensions.push("NonTransferable");
+              hasNonTransferable = true;
+              break;
+            }
+            case 14: { // TransferHook
+              detectedExtensions.push("TransferHook");
+              if (extLen >= 64) {
+                hasTransferHook = true;
+              }
+              break;
+            }
+            default: {
+              detectedExtensions.push(`UnknownExtension(${extType})`);
+              unknownExtensions.push(extType);
+              break;
+            }
           }
 
           offset = dataStart + extLen;
@@ -119,6 +149,11 @@ export class SolanaRpcClient {
         tokenProgram: isToken2022 ? "Token-2022" : "Tokenkeg",
         transferFeePercent,
         hasTransferHook,
+        hasPermanentDelegate,
+        hasNonTransferable,
+        defaultAccountState,
+        detectedExtensions,
+        unknownExtensions,
       };
     } catch {
       return { mintAuthority: null, freezeAuthority: null, initialized: null, decimals: null, tokenProgram: "unknown", transferFeePercent: null, hasTransferHook: false };

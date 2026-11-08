@@ -3,7 +3,8 @@ import type { LiveTransactionRecord } from "@radar/shared";
 
 export class LiveSwapService {
   /**
-   * Get dynamic decimals for token mint via RPC
+   * Get dynamic decimals for token mint via RPC.
+   * Removes silent 6-decimal fallback; throws on error or unknown state.
    */
   static async getMintDecimals(env: Env, mint: string): Promise<number> {
     if (mint === "So11111111111111111111111111111111111111112") return 9; // SOL has 9 decimals
@@ -11,22 +12,25 @@ export class LiveSwapService {
       ? `https://mainnet.helius-rpc.com/?api-key=${env.HELIUS_API_KEY}`
       : (env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com");
 
-    try {
-      const res = await fetch(rpcUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: 1,
-          method: "getTokenSupply",
-          params: [mint, { commitment: "confirmed" }],
-        }),
-      });
-      const data: any = await res.json();
-      return data?.result?.value?.decimals ?? 6;
-    } catch {
-      return 6; // Fallback to 6 decimals if RPC unreachable
+    const res = await fetch(rpcUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "getTokenSupply",
+        params: [mint, { commitment: "confirmed" }],
+      }),
+    });
+    if (!res.ok) {
+      throw new Error(`Failed to lookup decimals for mint ${mint} (HTTP ${res.status})`);
     }
+    const data: any = await res.json();
+    const decimals = data?.result?.value?.decimals;
+    if (typeof decimals !== "number" || decimals < 0 || decimals > 18) {
+      throw new Error(`Unable to resolve valid decimals for mint ${mint}`);
+    }
+    return decimals;
   }
 
   /**

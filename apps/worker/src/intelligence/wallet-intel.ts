@@ -313,11 +313,21 @@ export class WalletIntelligenceEngine {
       } catch {
         ev = {};
       }
+      const conf = Number(r.confidence_score) || 50;
+      const cat = r.relationship_type === "shared_funding"
+        ? "Confirmed"
+        : conf >= 70
+        ? "Strong inference"
+        : conf >= 40
+        ? "Weak indicator"
+        : "Unknown";
+
       return {
         walletA: r.wallet_a,
         walletB: r.wallet_b,
         relationshipType: r.relationship_type,
-        confidenceScore: r.confidence_score,
+        confidenceScore: conf,
+        category: cat,
         evidence: ev,
       };
     });
@@ -386,20 +396,29 @@ export class WalletIntelligenceEngine {
           // Shared funding transaction is confirmed evidence (higher confidence), co-holding is inferred
           const isConfirmed = sharedTxs > 0;
           const confidence = isConfirmed
-            ? Math.min(98, 70 + sharedTxs * 10)
+            ? Math.min(98, 75 + sharedTxs * 10)
             : Math.min(85, 30 + coHoldCount * 15);
+
+          const category = isConfirmed
+            ? "Confirmed"
+            : confidence >= 70
+            ? "Strong inference"
+            : confidence >= 40
+            ? "Weak indicator"
+            : "Unknown";
 
           const rel: WalletRelationship = {
             walletA: wA,
             walletB: wB,
             relationshipType: isConfirmed ? "shared_funding" : "coordinated_buy",
             confidenceScore: confidence,
+            category,
             evidence: {
               commonTxsCount: sharedTxs || coHoldCount,
               confirmedSharedFunding: isConfirmed,
               description: isConfirmed
-                ? `Confirmed shared funding via ${sharedTxs} on-chain transaction(s)`
-                : `Wallets co-hold top positions across ${coHoldCount} distinct Solana tokens`,
+                ? `[Confirmed] Verified shared funder (${sharedFunder}) via on-chain transaction flow`
+                : `[${category}] Wallets co-hold top positions across ${coHoldCount} distinct Solana tokens`,
             },
           };
           clusters.push(rel);

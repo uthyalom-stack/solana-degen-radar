@@ -192,9 +192,9 @@ const parseList = (value?: string) => {
 // Client-side authentication token support (configured via localStorage or environment)
 function getStoredAuthSecret(): string {
   if (typeof window !== "undefined") {
-    return localStorage.getItem("radar_auth_secret") || process.env.NEXT_PUBLIC_RADAR_SECRET || "radar-local-dev-secret";
+    return localStorage.getItem("radar_auth_secret") || process.env.NEXT_PUBLIC_RADAR_SECRET || "";
   }
-  return process.env.NEXT_PUBLIC_RADAR_SECRET || "radar-local-dev-secret";
+  return process.env.NEXT_PUBLIC_RADAR_SECRET || "";
 }
 
 async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {

@@ -63,7 +63,7 @@ export interface SecurityEvidence {
     lpBurnedPercent?: number | null;
     top10HolderPercent?: number | null;
     isSellable?: boolean | null;
-    sellabilityStatus?: "verified_sellable" | "honeypot" | "unverified";
+    sellabilityStatus?: "verified_sellable" | "confirmed_honeypot" | "honeypot" | "no_route" | "insufficient_liquidity" | "unverified";
     creatorAddress?: string | null;
     creatorTokensLaunched?: number | null;
     creatorRugRatePct?: number | null;
@@ -96,6 +96,7 @@ export interface AlertItem {
 export interface PaperPosition {
     id: string;
     portfolio_id: string;
+    session_id?: string;
     mint: string;
     symbol?: string;
     name?: string;
@@ -111,6 +112,8 @@ export interface PaperPosition {
     current_price_usd?: number;
     unrealized_pnl_usd?: number;
     unrealized_pnl_pct?: number;
+    price_updated_at?: string;
+    is_stale_price?: boolean;
 }
 export interface PaperTrade {
     id: string;
@@ -175,18 +178,80 @@ export interface WalletHolderRecord {
     isPoolOrVault: boolean;
     isCreator: boolean;
 }
+export type RelationshipCategory = "Confirmed" | "Strong inference" | "Weak indicator" | "Unknown";
 export interface WalletRelationship {
     walletA: string;
     walletB: string;
     relationshipType: "shared_funder" | "shared_funding" | "frequent_transfers" | "coordinated_buy" | "coordinated_exit";
     confidenceScore: number;
+    category: RelationshipCategory;
     evidence: {
         sharedFundingSource?: string;
         commonTxsCount?: number;
         confirmedSharedFunding?: boolean;
+        signatures?: string[];
         description: string;
+        amounts?: number[];
     };
 }
+export interface SmartMoneyProfile {
+    address: string;
+    totalEntries: number;
+    winRatePct: number;
+    realizedPnlUsd: number;
+    unrealizedPnlUsd: number;
+    avgHoldingHours: number;
+    profitFactor: number;
+    maxDrawdownPct: number;
+    tokensParticipated: string[];
+    lastObservedAt: string;
+}
+export type PnlCardType = "trade" | "portfolio";
+export type PnlTradeType = "PAPER" | "LIVE";
+export interface PnlCardRecord {
+    id: string;
+    cardType: PnlCardType;
+    tradeType: PnlTradeType;
+    mint?: string;
+    symbol?: string;
+    name?: string;
+    buyPriceUsd?: number;
+    sellPriceUsd?: number;
+    investedUsd?: number;
+    quantity?: number;
+    realizedPnlUsd?: number;
+    unrealizedPnlUsd?: number;
+    roiPct: number;
+    durationSeconds?: number;
+    txSignature?: string;
+    portfolioSummary?: {
+        totalEquityUsd: number;
+        startingBalanceUsd: number;
+        cashBalanceUsd: number;
+        realizedPnlUsd: number;
+        unrealizedPnlUsd: number;
+        winRatePct: number;
+        totalTrades: number;
+        winningTrades: number;
+        losingTrades: number;
+        period: "daily" | "weekly" | "monthly" | "all_time";
+    };
+    isPublic: boolean;
+    createdAt: string;
+}
+export declare function calculateTradePnlMetrics(params: {
+    buyPrice: number;
+    sellOrCurrentPrice: number;
+    quantity: number;
+    investedUsd: number;
+    feesUsd?: number;
+    isClosed?: boolean;
+}): {
+    realizedPnlUsd: number;
+    unrealizedPnlUsd: number;
+    roiPct: number;
+    currentValueUsd: number;
+};
 export type BreakoutSignalType = "early_attention" | "momentum_surge" | "confirmed_breakout" | "overextended" | "distribution_warning";
 export interface BreakoutSignal {
     id: string;
@@ -297,6 +362,28 @@ export declare function detectBreakoutSignals(input: {
     previousVolume1h?: number | null;
     socialMentions1h?: number;
 }): BreakoutSignal[];
+export interface TradeViabilityAssessment {
+    mint: string;
+    viabilityScore: number;
+    recommendation: "Strong candidate" | "Moderate opportunity" | "High risk / Caution" | "Disqualified";
+    reasons: string[];
+    disqualified: boolean;
+}
+export declare function evaluateTradeViability(momentumScore: number, riskAssessment: RiskAssessment): TradeViabilityAssessment;
+export interface SurvivalPrediction {
+    mint: string;
+    estimatedAt: string;
+    horizonProbabilities: {
+        "5m": number;
+        "15m": number;
+        "1h": number;
+        "6h": number;
+        "24h": number;
+    };
+    primaryFactors: string[];
+    limitationsNotice: string;
+}
+export declare function estimateTokenSurvival(mint: string, evidence: SecurityEvidence, momentumScore: number, riskScore: number): SurvivalPrediction;
 /** Execute a deterministic historical backtest simulation */
 export declare function runBacktestSimulation(snapshots: Array<{
     mint: string;
