@@ -182,17 +182,86 @@ async function runMarketScan(env: Env) {
         const launchpad = PumpFunDiscovery.identifyLaunchpad(pair);
 
         // Fetch on-chain security metrics for top candidates
-        let mintSecurity: { mintAuthority: boolean | null; freezeAuthority: boolean | null; initialized: boolean | null } | null = null;
-        let holderInfo: { top10HolderPercent: number | null; holderCount: number | null } = { top10HolderPercent: null, holderCount: null };
+        let mintSecurity: { mintAuthority: boolean | null; freezeAuthority: boolean | null; initialized: boolean | null; tokenProgram?: string; transferFeePercent?: number | null; hasTransferHook?: boolean } | null = null;
+        let holderInfo: { top10HolderPercent: number | null; holderCount: number | null; accounts?: Array<{ address: string; amount: string; uiAmount: number }>; totalSupply?: number } = { top10HolderPercent: null, holderCount: null };
+        let lpBurnedPercent: number | null = null;
+        let sellability: { isSellable: boolean; status: "verified_sellable" | "honeypot" | "unverified" } = { isSellable: false, status: "unverified" };
+
+        // Creator and holder intelligence recording
+        let creatorAddress: string | undefined = undefined;
+        let creatorProfile: any = null;
 
         if (idx < 10) {
           try {
-            const [sec, holders] = await Promise.all([
+            const [sec, holders, sellCheck] = await Promise.all([
               rpcClient.getMintSecurity(mint),
               rpcClient.getHolderConcentration(mint),
+              rpcClient.testSellability(mint),
             ]);
             mintSecurity = sec;
             holderInfo = holders;
+            sellability = sellCheck;
+
+            if (pair.pairAddress) {
+              lpBurnedPercent = await rpcClient.verifyLpBurn(pair.pairAddress);
+            }
+
+            // Resolve actual wallet owners for token accounts
+            if (holders.accounts && holders.accounts.length > 0 && holders.totalSupply) {
+              const accountAddrs = holders.accounts.map(a => a.address);
+              const ownerMap = await rpcClient.resolveTokenAccountOwners(accountAddrs);
+
+              const resolvedHolders = holders.accounts.map(a => ({
+                address: ownerMap.get(a.address) || a.address,
+                amount: a.amount,
+                uiAmount: a.uiAmount,
+              }));
+
+              // Extract actual creator if token has deployer info in pair or first holder
+              creatorAddress = resolvedHolders[0]?.address;
+
+              if (creatorAddress) {
+                creatorProfile = await WalletIntelligenceEngine.recordCreatorLaunch(
+                  env.DB,
+                  creatorAddress,
+                  mint,
+                  num(pair.liquidity?.usd) || 0,
+                  num(pair.marketCap) || 0
+                );
+              }
+
+              await WalletIntelligenceEngine.recordHolderSnapshot(
+                env.DB,
+                mint,
+                resolvedHolders,
+                holders.totalSupply,
+                creatorAddress
+              );
+
+              // Ingest parsed on-chain transfer history for top holders to populate wallet_activities
+              for (const holder of resolvedHolders.slice(0, 3)) {
+                try {
+                  const sigs = await rpcClient.getRecentSignaturesForAddress(holder.address, 2);
+                  for (const s of sigs) {
+                    const parsedTx = await rpcClient.getParsedTransaction(s.signature);
+                    const fundingTransfer = parsedTx?.transfers.find(t => t.to === holder.address);
+                    await env.DB.prepare(
+                      `INSERT OR IGNORE INTO wallet_activities (id, wallet_address, mint, activity_type, signature, observed_at)
+                       VALUES (?, ?, ?, ?, ?, ?)`
+                    ).bind(
+                      id(),
+                      holder.address,
+                      mint,
+                      fundingTransfer ? `funded_by:${fundingTransfer.from}` : 'transfer',
+                      s.signature,
+                      s.blockTime ? new Date(s.blockTime * 1000).toISOString() : observed
+                    ).run();
+                  }
+                } catch {
+                  // RPC error handling
+                }
+              }
+            }
           } catch {
             // gracefully fallback
           }
@@ -211,7 +280,15 @@ async function runMarketScan(env: Env) {
             mintAuthority: mintSecurity?.mintAuthority,
             freezeAuthority: mintSecurity?.freezeAuthority,
             initialized: mintSecurity?.initialized,
+            tokenProgram: mintSecurity?.tokenProgram,
+            transferFeePercent: mintSecurity?.transferFeePercent,
+            hasTransferHook: mintSecurity?.hasTransferHook,
+            lpBurnedPercent,
             top10HolderPercent: holderInfo.top10HolderPercent,
+            isSellable: sellability.isSellable,
+            sellabilityStatus: sellability.status,
+            creatorAddress,
+            creatorRugRatePct: creatorProfile ? (creatorProfile.rugCount / Math.max(1, creatorProfile.totalTokensCreated)) * 100 : null,
           },
           observed
         );
@@ -574,18 +651,50 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
   const method = request.method;
 
   if (method === "OPTIONS") {
+    const origin = getSafeAllowedOrigin(request, env);
     return new Response(null, {
       status: 204,
       headers: {
-        "access-control-allow-origin": "*",
+        ...(origin ? { "access-control-allow-origin": origin } : {}),
         "access-control-allow-methods": "GET,POST,OPTIONS",
-        "access-control-allow-headers": "content-type,x-radar-secret,x-telegram-bot-api-secret-token",
+        "access-control-allow-headers": "content-type,x-radar-secret,x-idempotency-key,x-telegram-bot-api-secret-token",
+        "access-control-allow-credentials": "true",
       },
     });
   }
 
+  const isStateChanging = method === "POST" || method === "PUT" || method === "DELETE";
+
+  // Persistent D1 Rate limiting check (fail-closed on mutations if D1 unavailable)
+  const isAllowed = await checkD1RateLimit(env.DB, request, isStateChanging);
+  if (!isAllowed) {
+    return json({ error: "Rate limit exceeded or rate service unavailable" }, 429);
+  }
+
   if (path === "/health") {
     return json({ ok: true, name: "solana-degen-radar-worker", timestamp: now() });
+  }
+
+  // Check authentication & authorization for state-changing endpoints
+  if (isStateChanging && !path.startsWith("/api/telegram/")) {
+    if (!authenticateRequest(request, env)) {
+      return json({ error: "Unauthorized: Missing or invalid radar credentials" }, 401);
+    }
+  }
+
+  // Persistent D1-backed Idempotency check for critical mutation endpoints
+  const idempotencyKey = request.headers.get("x-idempotency-key");
+  if (idempotencyKey && isStateChanging) {
+    const cached = await getIdempotencyResponse(env.DB, idempotencyKey);
+    if (cached) {
+      return new Response(cached.responseBody, {
+        status: cached.status,
+        headers: {
+          "content-type": "application/json; charset=utf-8",
+          "x-idempotency-replayed": "true",
+        },
+      });
+    }
   }
 
   try {
@@ -688,40 +797,51 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
       return json(rows.results || []);
     }
 
-    // 7. Portfolio management (Paper-trading)
+    // 7. Portfolio management (Paper-trading with multi-session support)
     if (path === "/api/portfolio" && method === "GET") {
-      return json(await PaperTradingEngine.getPortfolio(env.DB, env));
+      const sessionId = url.searchParams.get("sessionId") || "default";
+      return json(await PaperTradingEngine.getPortfolio(env.DB, env, sessionId));
     }
 
     if (path === "/api/portfolio/reset" && method === "POST") {
       const body: any = await parseJson(request).catch(() => ({}));
-      return json(await PaperTradingEngine.resetPortfolio(env.DB, env, num(body.startingBalance) ?? undefined));
+      const sessionId = body.sessionId || "default";
+      return json(await PaperTradingEngine.resetPortfolio(env.DB, env, num(body.startingBalance) ?? undefined, sessionId));
     }
 
     if (path === "/api/paper/buy" && method === "POST") {
       const body: any = await parseJson(request);
-      return json(
-        await PaperTradingEngine.buy(
-          env.DB,
-          env,
-          String(body.mint || "").trim(),
-          Number(body.usd),
-          num(body.slippageBps) ?? 50
-        ),
-        201
+      const sessionId = body.sessionId || "default";
+      const buyResult = await PaperTradingEngine.buy(
+        env.DB,
+        env,
+        String(body.mint || "").trim(),
+        Number(body.usd),
+        num(body.slippageBps) ?? 50,
+        sessionId,
+        body.triggerSignal
       );
+      if (idempotencyKey) {
+        await saveIdempotencyResponse(env.DB, idempotencyKey, path, JSON.stringify(buyResult), 201);
+      }
+      return json(buyResult, 201);
     }
 
     if (path === "/api/paper/sell" && method === "POST") {
       const body: any = await parseJson(request);
-      return json(
-        await PaperTradingEngine.sell(
-          env.DB,
-          env,
-          String(body.positionId || "").trim(),
-          num(body.slippageBps) ?? 50
-        )
+      const sessionId = body.sessionId || "default";
+      const sellResult = await PaperTradingEngine.sell(
+        env.DB,
+        env,
+        String(body.positionId || "").trim(),
+        num(body.slippageBps) ?? 50,
+        sessionId,
+        num(body.portion) ?? 1.0
       );
+      if (idempotencyKey) {
+        await saveIdempotencyResponse(env.DB, idempotencyKey, path, JSON.stringify(sellResult), 200);
+      }
+      return json(sellResult);
     }
 
     // 8. Trigger Scans
@@ -837,6 +957,19 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
       return json(await LiveSwapService.getQuote(inputMint, outputMint, amount, slippageBps));
     }
 
+    if (path === "/api/wallet/spl" && method === "GET") {
+      const wallet = url.searchParams.get("wallet");
+      if (!wallet) throw new ApiError("wallet address required");
+      return json(await LiveSwapService.getWalletSplBalances(env, wallet));
+    }
+
+    if (path.startsWith("/api/tokens/") && path.endsWith("/decimals") && method === "GET") {
+      const mint = path.split("/")[3]?.trim();
+      if (!mint) throw new ApiError("mint address required");
+      const decimals = await LiveSwapService.getMintDecimals(env, mint);
+      return json({ mint, decimals });
+    }
+
     if (path === "/api/swap/transaction" && method === "POST") {
       const body: any = await parseJson(request);
       const { quoteResponse, userPublicKey, prioritizationFeeLamports } = body;
@@ -924,17 +1057,123 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
   }
 }
 
-function applyCors(response: Response, request: Request, env: Env): Response {
+// Persistent Cloudflare-compatible rate limiting using D1 system_logs
+const RATE_LIMIT_WINDOW_SECONDS = 60;
+const RATE_LIMIT_MAX_REQUESTS = 60;
+
+async function checkD1RateLimit(db: D1Database, request: Request, isMutation = false): Promise<boolean> {
+  const ip = request.headers.get("cf-connecting-ip") || "127.0.0.1";
+  const nowMs = Date.now();
+  const windowStart = new Date(nowMs - RATE_LIMIT_WINDOW_SECONDS * 1000).toISOString();
+
+  try {
+    // Opportunistic cleanup of expired logs (older than 10 minutes)
+    if (Math.random() < 0.05) {
+      const cleanupThreshold = new Date(nowMs - 600 * 1000).toISOString();
+      await db.prepare("DELETE FROM system_logs WHERE source LIKE 'ratelimit:%' AND created_at < ?").bind(cleanupThreshold).run().catch(() => {});
+      await db.prepare("DELETE FROM idempotency_keys WHERE expires_at < ?").bind(nowMs).run().catch(() => {});
+    }
+
+    const row = await db
+      .prepare(
+        "SELECT COUNT(*) as count FROM system_logs WHERE source = ? AND created_at >= ?"
+      )
+      .bind(`ratelimit:${ip}`, windowStart)
+      .first<any>();
+
+    const count = Number(row?.count) || 0;
+    if (count >= RATE_LIMIT_MAX_REQUESTS) {
+      return false;
+    }
+
+    // Record request timestamp
+    await db
+      .prepare(
+        "INSERT INTO system_logs (id, level, source, message, created_at) VALUES (?, 'info', ?, 'request', ?)"
+      )
+      .bind(crypto.randomUUID(), `ratelimit:${ip}`, new Date().toISOString())
+      .run();
+
+    return true;
+  } catch (err) {
+    // Fail closed on mutation routes if rate-limiting table is unavailable
+    if (isMutation) {
+      return false;
+    }
+    return true;
+  }
+}
+
+// Persistent D1-backed Idempotency
+async function getIdempotencyResponse(db: D1Database, key: string): Promise<{ responseBody: string; status: number } | null> {
+  try {
+    const row = await db.prepare("SELECT response_body, response_status, expires_at FROM idempotency_keys WHERE key = ?").bind(key).first<any>();
+    if (!row) return null;
+    if (Date.now() > Number(row.expires_at)) return null;
+    return { responseBody: row.response_body, status: row.response_status };
+  } catch {
+    return null;
+  }
+}
+
+async function saveIdempotencyResponse(db: D1Database, key: string, endpoint: string, body: string, status: number) {
+  try {
+    const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes cache
+    await db.prepare(
+      "INSERT OR REPLACE INTO idempotency_keys (key, endpoint, response_status, response_body, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)"
+    ).bind(key, endpoint, status, body, new Date().toISOString(), expiresAt).run();
+  } catch {
+    // DB error fallback
+  }
+}
+
+function getSafeAllowedOrigin(request: Request, env: Env): string | null {
   const origin = request.headers.get("Origin");
+  if (!origin) return null;
+
+  const allowedOrigins = [
+    env.DASHBOARD_ORIGIN,
+    "http://localhost:3000",
+    "http://localhost:3001",
+    "http://localhost:5173",
+    "http://127.0.0.1:3000",
+  ].filter(Boolean) as string[];
+
+  if (allowedOrigins.includes(origin)) {
+    return origin;
+  }
+  return null;
+}
+
+function authenticateRequest(request: Request, env: Env): boolean {
+  // Strict credentials validation: Origin headers are strictly for CORS, NOT authentication
+  const authHeader = request.headers.get("authorization") || "";
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+  const radarSecret = request.headers.get("x-radar-secret");
+
+  const expectedSecret = env.SOCIAL_INGEST_SECRET || (env as any).ADMIN_SECRET;
+
+  if (expectedSecret) {
+    if (radarSecret && radarSecret === expectedSecret) return true;
+    if (token && token === expectedSecret) return true;
+    return false;
+  }
+
+  // If no secret configured in environment, require explicit local development header
+  return radarSecret === "radar-local-dev-secret" || token === "radar-local-dev-secret";
+}
+
+function applyCors(response: Response, request: Request, env: Env): Response {
+  const allowedOrigin = getSafeAllowedOrigin(request, env);
   const headers = new Headers(response.headers);
-  if (origin && env.DASHBOARD_ORIGIN && origin === env.DASHBOARD_ORIGIN) {
-    headers.set("access-control-allow-origin", origin);
+  if (allowedOrigin) {
+    headers.set("access-control-allow-origin", allowedOrigin);
     headers.set("access-control-allow-credentials", "true");
     headers.set("access-control-allow-methods", "GET,POST,OPTIONS");
-    headers.set("access-control-allow-headers", "content-type,x-radar-secret,x-telegram-bot-api-secret-token");
+    headers.set("access-control-allow-headers", "content-type,x-radar-secret,x-idempotency-key,x-telegram-bot-api-secret-token");
     headers.append("vary", "Origin");
-  } else if (origin) {
-    headers.set("access-control-allow-origin", origin);
+  } else {
+    headers.delete("access-control-allow-origin");
   }
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }

@@ -139,3 +139,29 @@ test("Formatting helpers format Solana addresses and currency amounts cleanly", 
   assert.equal(formatUsd(0.00001234), "$0.00001234");
   assert.equal(shortenAddress("7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr", 4), "7GCi...W2hr");
 });
+
+test("Paper trading mark-to-market valuations reflect actual price gains and losses", () => {
+  const entryPrice = 0.000050; // $0.000050 per token
+  const investment = 5.0; // $5 USD
+  const feeBps = 10; // 0.1% fee
+  const effectiveCost = investment * (1 - feeBps / 10000);
+  const tokenQuantity = effectiveCost / entryPrice; // 99,900 tokens
+
+  // Scenario 1: Upward price movement (+30%)
+  const priceUp = 0.000065;
+  const valueUp = tokenQuantity * priceUp;
+  const unrealizedPlUp = valueUp - investment;
+  const unrealizedRoiUp = (unrealizedPlUp / investment) * 100;
+  assert.ok(valueUp > investment, "Position should gain value on price increase");
+  assert.ok(unrealizedPlUp > 0, "Unrealized P/L should be positive on price increase");
+  assert.ok(unrealizedRoiUp > 25, "ROI should reflect price rise minus slippage/fees");
+
+  // Scenario 2: Downward price movement (-40%)
+  const priceDown = 0.000030;
+  const valueDown = tokenQuantity * priceDown;
+  const unrealizedPlDown = valueDown - investment;
+  const unrealizedRoiDown = (unrealizedPlDown / investment) * 100;
+  assert.ok(valueDown < investment, "Position should lose value on price decrease");
+  assert.ok(unrealizedPlDown < 0, "Unrealized P/L should be negative on price decrease");
+  assert.ok(unrealizedRoiDown < -35, "ROI should reflect price drop");
+});

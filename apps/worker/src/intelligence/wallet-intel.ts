@@ -355,7 +355,23 @@ export class WalletIntelligenceEngine {
         const wA = nonPoolHolders[i].address;
         const wB = nonPoolHolders[j].address;
 
-        // Check if both wallets appear in snapshots of other tokens
+        // 1. Check for verified shared funding (e.g. funded_by:<funder> matching)
+        const commonFunder = await db
+          .prepare(
+            `SELECT a1.activity_type as funder
+             FROM wallet_activities a1
+             JOIN wallet_activities a2 ON a1.activity_type = a2.activity_type
+             WHERE a1.wallet_address = ? AND a2.wallet_address = ?
+               AND a1.activity_type LIKE 'funded_by:%'
+             LIMIT 1`
+          )
+          .bind(wA, wB)
+          .first<any>();
+
+        const sharedFunder = commonFunder?.funder ? commonFunder.funder.replace('funded_by:', '') : null;
+        const sharedTxs = sharedFunder ? 1 : 0;
+
+        // 2. Check if both wallets appear in snapshots of other tokens (inferred co-holding)
         const sharedTokens = await db
           .prepare(
             `SELECT COUNT(DISTINCT mint) as count FROM holder_snapshots
@@ -364,17 +380,26 @@ export class WalletIntelligenceEngine {
           .bind(wA, wB)
           .first<any>();
 
-        const count = Number(sharedTokens?.count) || 0;
-        if (count >= 2) {
-          const confidence = Math.min(95, 40 + count * 20);
+        const coHoldCount = Number(sharedTokens?.count) || 0;
+
+        if (sharedTxs > 0 || coHoldCount >= 2) {
+          // Shared funding transaction is confirmed evidence (higher confidence), co-holding is inferred
+          const isConfirmed = sharedTxs > 0;
+          const confidence = isConfirmed
+            ? Math.min(98, 70 + sharedTxs * 10)
+            : Math.min(85, 30 + coHoldCount * 15);
+
           const rel: WalletRelationship = {
             walletA: wA,
             walletB: wB,
-            relationshipType: "coordinated_buy",
+            relationshipType: isConfirmed ? "shared_funding" : "coordinated_buy",
             confidenceScore: confidence,
             evidence: {
-              commonTxsCount: count,
-              description: `Wallets co-hold top positions in ${count} distinct Solana tokens`,
+              commonTxsCount: sharedTxs || coHoldCount,
+              confirmedSharedFunding: isConfirmed,
+              description: isConfirmed
+                ? `Confirmed shared funding via ${sharedTxs} on-chain transaction(s)`
+                : `Wallets co-hold top positions across ${coHoldCount} distinct Solana tokens`,
             },
           };
           clusters.push(rel);

@@ -189,14 +189,31 @@ const parseList = (value?: string) => {
   }
 };
 
+// Client-side authentication token support (configured via localStorage or environment)
+function getStoredAuthSecret(): string {
+  if (typeof window !== "undefined") {
+    return localStorage.getItem("radar_auth_secret") || process.env.NEXT_PUBLIC_RADAR_SECRET || "radar-local-dev-secret";
+  }
+  return process.env.NEXT_PUBLIC_RADAR_SECRET || "radar-local-dev-secret";
+}
+
 async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const url = `${API}${path}`;
+  const secret = getStoredAuthSecret();
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    ...(secret ? { "x-radar-secret": secret } : {}),
+    ...(init?.headers as Record<string, string> || {}),
+  };
+
+  // Attach idempotency key for non-idempotent state mutations
+  if (init?.method && ["POST", "PUT", "DELETE"].includes(init.method.toUpperCase()) && !headers["x-idempotency-key"]) {
+    headers["x-idempotency-key"] = `idemp-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+  }
+
   const response = await fetch(url, {
     ...init,
-    headers: {
-      "content-type": "application/json",
-      ...(init?.headers || {}),
-    },
+    headers,
     credentials: "include",
     cache: "no-store",
   });
@@ -289,9 +306,12 @@ export default function Home() {
   const [btCapital, setBtCapital] = useState(1000);
   const [btBusy, setBtBusy] = useState(false);
 
-  // Settings
+  // Settings & Responsive Sidebar State
   const [customRpcUrl, setCustomRpcUrl] = useState("https://api.mainnet-beta.solana.com");
   const [slippageToleranceBps, setSlippageToleranceBps] = useState(50);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -343,6 +363,8 @@ export default function Home() {
 
       // Listen for account changes
       provider.on("accountChanged", (publicKey: any) => {
+        setLiveQuote(null);
+        setTxStatus(null);
         if (publicKey) {
           setPhantomAddress(publicKey.toString());
           void fetchSolBalance(publicKey.toString());
@@ -498,10 +520,19 @@ export default function Home() {
     setError("");
     try {
       const lamports = Math.floor(solAmount * 1_000_000_000);
+      let decimals = 6;
+      try {
+        const decData = await apiRequest<any>(`/api/tokens/${outputMint}/decimals`);
+        if (decData && Number.isFinite(decData.decimals)) {
+          decimals = Number(decData.decimals);
+        }
+      } catch {
+        decimals = 6;
+      }
       const quote = await apiRequest<any>(
         `/api/swap/quote?inputMint=So11111111111111111111111111111111111111112&outputMint=${outputMint}&amount=${lamports}&slippageBps=${slippageToleranceBps}`
       );
-      setLiveQuote(quote);
+      setLiveQuote({ ...quote, decimals });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to fetch Jupiter swap quote");
       setLiveQuote(null);
@@ -552,7 +583,7 @@ export default function Home() {
           inputMint: "So11111111111111111111111111111111111111112",
           outputMint: liveSwapMint,
           inputAmount: Number(liveSwapAmount),
-          outputAmount: Number(liveQuote.outAmount) / 1_000_000,
+          outputAmount: Number(liveQuote.outAmount) / (10 ** (liveQuote.decimals || 6)),
           slippageBps: slippageToleranceBps,
           priceImpactPct: liveQuote.priceImpactPct,
           routePlan: liveQuote.routePlan,
@@ -630,167 +661,217 @@ export default function Home() {
   const cash = portfolio?.cash_balance ?? overview?.portfolio?.cash_balance ?? 100;
   const equity = portfolio?.total_equity_usd ?? overview?.portfolio?.total_equity_usd ?? cash;
 
+  const navSections = [
+    {
+      title: "Discovery & Radar",
+      items: [
+        { id: "overview", label: "Overview Feed", icon: "🛰️" },
+        { id: "launches", label: "New Launches", icon: "🚀" },
+        { id: "trending", label: "Trending Tokens", icon: "🔥" },
+      ],
+    },
+    {
+      title: "Market Intelligence",
+      items: [
+        { id: "breakouts", label: "Breakout Radar", icon: "⚡", count: breakoutSignals.length },
+        { id: "narratives", label: "Social & Narratives", icon: "🧠" },
+        { id: "wallets", label: "Wallet Investigator", icon: "👥" },
+        { id: "risk", label: "Risk & Honeypots", icon: "🛡️" },
+        { id: "alerts", label: "Security Alerts", icon: "🚨", count: alerts.length },
+      ],
+    },
+    {
+      title: "Execution Terminals",
+      items: [
+        { id: "paper", label: "Paper Simulation", icon: "🧪" },
+        { id: "live_swap", label: "Phantom Live Swaps", icon: "⚡" },
+        { id: "portfolio", label: "Trade Analytics", icon: "💼" },
+      ],
+    },
+    {
+      title: "Analytics & System",
+      items: [
+        { id: "backtesting", label: "Strategy Backtesting", icon: "📊" },
+        { id: "providers", label: "Provider Health", icon: "⚙️" },
+        { id: "settings", label: "Terminal Settings", icon: "🔧" },
+      ],
+    },
+  ];
+
   return (
-    <main className="shell">
-      {/* Top Header */}
-      <header className="top">
-        <div>
-          <div className="brand">
-            <span className="radar-dot" />
-            ◈ SOLANA DEGEN RADAR
-          </div>
-          <div className="muted small" style={{ marginTop: 4 }}>
-            Professional Solana Intelligence Terminal · Wallet Clustering · Breakout Radar · Backtesting · Simulation & Live Swaps
-          </div>
+    <div className="app-layout">
+      {/* Desktop / Tablet Sidebar with mobile-open support */}
+      <aside className={`sidebar ${sidebarCollapsed ? "collapsed" : ""} ${mobileOpen ? "mobile-open" : ""}`}>
+        <div className="sidebar-header">
+          {!sidebarCollapsed && (
+            <div className="brand">
+              <span className="radar-dot" />
+              DEGEN RADAR
+              <span className="brand-sub">PRO</span>
+            </div>
+          )}
+          <button
+            className="collapse-btn"
+            title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+          >
+            {sidebarCollapsed ? "▶" : "◀"}
+          </button>
         </div>
 
-        <div className="header-actions">
-          {/* Mode Switcher */}
-          <div className="mode-toggle">
+        <nav className="sidebar-nav">
+          {navSections.map((group, gIdx) => (
+            <div key={gIdx}>
+              {!sidebarCollapsed && <div className="nav-group-title">{group.title}</div>}
+              {group.items.map(item => (
+                <button
+                  key={item.id}
+                  className={`nav-item ${tab === item.id ? "active" : ""}`}
+                  title={item.label}
+                  onClick={() => setTab(item.id as any)}
+                >
+                  <span className="nav-icon">{item.icon}</span>
+                  {!sidebarCollapsed && <span>{item.label}</span>}
+                  {!sidebarCollapsed && item.count != null && (
+                    <span className={`nav-badge ${item.count > 0 ? "accent" : ""}`}>{item.count}</span>
+                  )}
+                </button>
+              ))}
+            </div>
+          ))}
+        </nav>
+
+        {!sidebarCollapsed && (
+          <div className="sidebar-footer">
+            <div className="status-indicator">
+              <span className="radar-dot" />
+              <span>Solana Mainnet: Operational</span>
+            </div>
+          </div>
+        )}
+      </aside>
+
+      {/* Main Content Area */}
+      <div className="main-wrapper">
+        <header className="top-header">
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <button
-              className={tradingMode === "simulation" ? "active sim" : ""}
-              onClick={() => setTradingMode("simulation")}
+              className="button outline"
+              style={{ padding: "6px 10px", fontSize: 13, display: "inline-flex" }}
+              onClick={() => {
+                if (window.innerWidth <= 960) {
+                  setMobileOpen(!mobileOpen);
+                } else {
+                  setSidebarCollapsed(!sidebarCollapsed);
+                }
+              }}
             >
-              🧪 Simulation Mode
+              ☰
             </button>
-            <button
-              className={tradingMode === "live" ? "active live" : ""}
-              onClick={() => setTradingMode("live")}
-            >
-              ⚡ Live Mode (Phantom)
-            </button>
+            <div>
+              <div style={{ fontWeight: 800, fontSize: 15, letterSpacing: "-0.01em" }}>
+                {navSections.flatMap(s => s.items).find(i => i.id === tab)?.label || "Solana Terminal"}
+              </div>
+              <div className="muted tiny">
+                Real-Time Discovery & Trading Terminal
+              </div>
+            </div>
           </div>
 
-          {/* Wallet / Bankroll Indicator */}
-          {tradingMode === "simulation" ? (
-            <span className="pill">BANKROLL: {money(cash)}</span>
-          ) : phantomAddress ? (
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span className="pill live">
-                {solBalance != null ? `${solBalance.toFixed(3)} SOL` : "Phantom"} · {phantomAddress.slice(0, 4)}...{phantomAddress.slice(-4)}
-              </span>
-              <button className="button outline" style={{ padding: "5px 10px", fontSize: 11 }} onClick={disconnectPhantom}>
-                Disconnect
+          <div className="header-actions">
+            {/* Mode Switcher */}
+            <div className="mode-toggle">
+              <button
+                className={tradingMode === "simulation" ? "active sim" : ""}
+                onClick={() => setTradingMode("simulation")}
+              >
+                🧪 Simulation
+              </button>
+              <button
+                className={tradingMode === "live" ? "active live" : ""}
+                onClick={() => setTradingMode("live")}
+              >
+                ⚡ Live Mode
               </button>
             </div>
-          ) : (
-            <button className="button warning" onClick={connectPhantom}>
-              Connect Phantom
+
+            {/* Wallet / Bankroll Indicator */}
+            {tradingMode === "simulation" ? (
+              <span className="pill">BANKROLL: {money(cash)}</span>
+            ) : phantomAddress ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span className="pill live">
+                  {solBalance != null ? `${solBalance.toFixed(3)} SOL` : "Phantom"} · {phantomAddress.slice(0, 4)}...{phantomAddress.slice(-4)}
+                </span>
+                <button className="button outline" style={{ padding: "4px 8px", fontSize: 11 }} onClick={disconnectPhantom}>
+                  Disconnect
+                </button>
+              </div>
+            ) : (
+              <button className="button warning" style={{ padding: "6px 12px", fontSize: 12 }} onClick={connectPhantom}>
+                Connect Phantom
+              </button>
+            )}
+
+            <button className="button primary" style={{ padding: "6px 12px", fontSize: 12 }} onClick={scanMarket} disabled={busy}>
+              {busy ? "Scanning…" : "Scan Market"}
             </button>
+            <button className="button outline" style={{ padding: "6px 12px", fontSize: 12 }} onClick={scanSocials} disabled={busy}>
+              Scan Socials
+            </button>
+          </div>
+        </header>
+
+        <main className="content-body">
+          {/* Notices */}
+          {error && (
+            <div className="notice error">
+              <strong>Alert:</strong> {error}
+            </div>
           )}
+          {message && <div className="notice success">{message}</div>}
 
-          <button className="button primary" onClick={scanMarket} disabled={busy}>
-            {busy ? "Scanning…" : "Scan Market"}
-          </button>
-          <button className="button outline" onClick={scanSocials} disabled={busy}>
-            Scan Socials
-          </button>
-        </div>
-      </header>
+          {/* Top Summary Metrics */}
+          <section className="grid">
+            <article className="panel">
+              <div className="muted small">Tracked Solana Tokens</div>
+              <div className="metric">{overview?.counts.tokens ?? tokens.length}</div>
+              <div className="muted small">Deduplicated on-chain mints</div>
+            </article>
 
-      {/* Notices */}
-      {error && (
-        <div className="notice error">
-          <strong>Alert:</strong> {error}
-        </div>
-      )}
-      {message && <div className="notice success">{message}</div>}
+            <article className="panel">
+              <div className="muted small">Active Meme Narratives</div>
+              <div className="metric">{overview?.counts.narratives ?? narratives.length}</div>
+              <div className="muted small">Multi-platform viral tracking</div>
+            </article>
 
-      {/* Top Summary Metrics */}
-      <section className="grid">
-        <article className="panel">
-          <div className="muted small">Tracked Solana Tokens</div>
-          <div className="metric">{overview?.counts.tokens ?? tokens.length}</div>
-          <div className="muted small">Deduplicated on-chain mints</div>
-        </article>
+            <article className="panel">
+              <div className="muted small">Breakouts & Alerts Today</div>
+              <div className="metric">{breakoutSignals.length + alerts.length}</div>
+              <div className="muted small">{breakoutSignals.length} breakouts · {alerts.length} risk alerts</div>
+            </article>
 
-        <article className="panel">
-          <div className="muted small">Active Meme Narratives</div>
-          <div className="metric">{overview?.counts.narratives ?? narratives.length}</div>
-          <div className="muted small">Multi-platform viral tracking</div>
-        </article>
+            <article className="panel">
+              <div className="muted small">
+                {tradingMode === "simulation" ? "Virtual Portfolio Equity" : "Phantom Wallet SOL"}
+              </div>
+              <div className="metric">
+                {tradingMode === "simulation"
+                  ? money(equity)
+                  : solBalance != null
+                  ? `${solBalance.toFixed(3)} SOL`
+                  : "Not Connected"}
+              </div>
+              <div className="muted small">
+                {tradingMode === "simulation"
+                  ? `Win Rate: ${portfolio?.win_rate_pct ?? 0}% · Realized: ${money(portfolio?.realized_pnl_usd || 0)}`
+                  : "Mainnet-Beta Non-Custodial"}
+              </div>
+            </article>
+          </section>
 
-        <article className="panel">
-          <div className="muted small">Breakouts & Alerts Today</div>
-          <div className="metric">{breakoutSignals.length + alerts.length}</div>
-          <div className="muted small">{breakoutSignals.length} breakouts · {alerts.length} risk alerts</div>
-        </article>
-
-        <article className="panel">
-          <div className="muted small">
-            {tradingMode === "simulation" ? "Virtual Portfolio Equity" : "Phantom Wallet SOL"}
-          </div>
-          <div className="metric">
-            {tradingMode === "simulation"
-              ? money(equity)
-              : solBalance != null
-              ? `${solBalance.toFixed(3)} SOL`
-              : "Not Connected"}
-          </div>
-          <div className="muted small">
-            {tradingMode === "simulation"
-              ? `Win Rate: ${portfolio?.win_rate_pct ?? 0}% · Realized: ${money(portfolio?.realized_pnl_usd || 0)}`
-              : "Mainnet-Beta Non-Custodial"}
-          </div>
-        </article>
-      </section>
-
-      {/* Main Terminal Workspace */}
-      <section className="panel section">
-        <div className="section-head">
-          <div>
-            <h2>Terminal Intelligence Suite</h2>
-            <p className="muted small">
-              Real-time Solana meme-coin radar. Evidence-based risk detection, deterministic scoring, and non-custodial execution.
-            </p>
-          </div>
-
-          {/* 15 Specification Navigation Tabs */}
-          <nav className="tabs">
-            <button className={tab === "overview" ? "active" : ""} onClick={() => setTab("overview")}>
-              🛰️ Radar Feed
-            </button>
-            <button className={tab === "launches" ? "active" : ""} onClick={() => setTab("launches")}>
-              🚀 New Launches
-            </button>
-            <button className={tab === "trending" ? "active" : ""} onClick={() => setTab("trending")}>
-              🔥 Trending
-            </button>
-            <button className={tab === "wallets" ? "active" : ""} onClick={() => setTab("wallets")}>
-              👥 Wallet Intelligence
-            </button>
-            <button className={tab === "narratives" ? "active" : ""} onClick={() => setTab("narratives")}>
-              🧠 Social & Narratives
-            </button>
-            <button className={tab === "risk" ? "active" : ""} onClick={() => setTab("risk")}>
-              🛡️ Risk & Honeypots
-            </button>
-            <button className={tab === "breakouts" ? "active" : ""} onClick={() => setTab("breakouts")}>
-              ⚡ Breakout Radar ({breakoutSignals.length})
-            </button>
-            <button className={tab === "paper" ? "active" : ""} onClick={() => setTab("paper")}>
-              🧪 Paper Trading
-            </button>
-            <button className={tab === "live_swap" ? "active" : ""} onClick={() => setTab("live_swap")}>
-              ⚡ Live Swaps
-            </button>
-            <button className={tab === "portfolio" ? "active" : ""} onClick={() => setTab("portfolio")}>
-              💼 Portfolio
-            </button>
-            <button className={tab === "alerts" ? "active" : ""} onClick={() => setTab("alerts")}>
-              🚨 Alerts ({alerts.length})
-            </button>
-            <button className={tab === "backtesting" ? "active" : ""} onClick={() => setTab("backtesting")}>
-              📊 Backtesting
-            </button>
-            <button className={tab === "providers" ? "active" : ""} onClick={() => setTab("providers")}>
-              ⚙️ Provider Health
-            </button>
-            <button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")}>
-              🔧 Settings
-            </button>
-          </nav>
-        </div>
+          {/* Main Terminal Workspace */}
+          <section className="panel section">
 
         {/* SECTION 1: RADAR OVERVIEW FEED */}
         {(tab === "overview" || tab === "launches" || tab === "trending") && (
@@ -1354,7 +1435,7 @@ export default function Home() {
                         <span className="muted small">Receive:</span>
                         <strong style={{ color: "#86efac" }}>
                           {" "}
-                          ~{compact(Number(liveQuote.outAmount) / 1_000_000)} tokens
+                          ~{compact(Number(liveQuote.outAmount) / (10 ** (liveQuote.decimals || 6)))} tokens
                         </strong>
                       </div>
                     </div>
@@ -1894,10 +1975,79 @@ export default function Home() {
         </div>
       )}
 
-      {/* Operational Principles Footer */}
-      <footer className="muted small" style={{ marginTop: 24, textAlign: "center" }}>
-        Solana Degen Radar · Non-Custodial Meme Token Discovery Terminal
-      </footer>
-    </main>
+          {/* Operational Principles Footer */}
+          <footer className="muted small" style={{ marginTop: 24, textAlign: "center" }}>
+            Solana Degen Radar · Non-Custodial Meme Token Discovery Terminal
+          </footer>
+        </main>
+      </div>
+
+      {/* Mobile Bottom Navigation Bar */}
+      <nav className="mobile-nav-bar">
+        <button
+          className={`mobile-nav-btn ${tab === "overview" ? "active" : ""}`}
+          onClick={() => setTab("overview")}
+        >
+          <span>🛰️</span>
+          Radar
+        </button>
+        <button
+          className={`mobile-nav-btn ${tab === "breakouts" ? "active" : ""}`}
+          onClick={() => setTab("breakouts")}
+        >
+          <span>⚡</span>
+          Breakouts
+        </button>
+        <button
+          className={`mobile-nav-btn ${tab === "paper" ? "active" : ""}`}
+          onClick={() => setTab("paper")}
+        >
+          <span>🧪</span>
+          Paper
+        </button>
+        <button
+          className={`mobile-nav-btn ${tab === "live_swap" ? "active" : ""}`}
+          onClick={() => setTab("live_swap")}
+        >
+          <span>⚡</span>
+          Swap
+        </button>
+        <button
+          className={`mobile-nav-btn ${mobileDrawerOpen ? "active" : ""}`}
+          onClick={() => setMobileDrawerOpen(!mobileDrawerOpen)}
+        >
+          <span>☰</span>
+          More
+        </button>
+      </nav>
+
+      {/* Mobile More Drawer */}
+      {mobileDrawerOpen && (
+        <div className="mobile-drawer-overlay" onClick={() => setMobileDrawerOpen(false)}>
+          <div className="mobile-drawer" onClick={e => e.stopPropagation()}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+              <strong>Terminal Navigation</strong>
+              <button className="modal-close" onClick={() => setMobileDrawerOpen(false)}>×</button>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 8 }}>
+              {navSections.flatMap(s => s.items).map(item => (
+                <button
+                  key={item.id}
+                  className={`button ${tab === item.id ? "primary" : "outline"}`}
+                  style={{ justifyContent: "flex-start", padding: "10px 12px", fontSize: 12 }}
+                  onClick={() => {
+                    setTab(item.id as any);
+                    setMobileDrawerOpen(false);
+                  }}
+                >
+                  <span>{item.icon}</span>
+                  <span style={{ marginLeft: 6 }}>{item.label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }

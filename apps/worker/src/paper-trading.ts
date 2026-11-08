@@ -5,8 +5,9 @@ const now = () => new Date().toISOString();
 const id = () => crypto.randomUUID();
 
 export class PaperTradingEngine {
-  static async getPortfolio(db: D1Database, env: Env): Promise<PaperPortfolio> {
-    let row = await db.prepare("SELECT * FROM paper_portfolios ORDER BY created_at LIMIT 1").first<any>();
+  static async getPortfolio(db: D1Database, env: Env, sessionId = "default"): Promise<PaperPortfolio> {
+    const portfolioId = sessionId === "default" ? "paper-default" : `paper-${sessionId}`;
+    let row = await db.prepare("SELECT * FROM paper_portfolios WHERE id = ?").bind(portfolioId).first<any>();
 
     if (!row) {
       const starting = Math.max(1, Number(env.PAPER_STARTING_BALANCE) || 100);
@@ -15,17 +16,17 @@ export class PaperTradingEngine {
           "INSERT OR IGNORE INTO paper_portfolios (id,name,quote_currency,starting_balance,cash_balance,created_at,config_json) VALUES (?,?,?,?,?,?,?)"
         )
         .bind(
-          "paper-default",
-          "Simulation Portfolio",
+          portfolioId,
+          sessionId === "default" ? "Simulation Portfolio" : `Session ${sessionId.toUpperCase()}`,
           "USD",
           starting,
           starting,
           now(),
-          JSON.stringify({ defaultBankroll: starting, slippageBps: 50, feeBps: 10 })
+          JSON.stringify({ defaultBankroll: starting, sessionId, slippageBps: 50, feeBps: 10 })
         )
         .run();
 
-      row = await db.prepare("SELECT * FROM paper_portfolios WHERE id = ?").bind("paper-default").first<any>();
+      row = await db.prepare("SELECT * FROM paper_portfolios WHERE id = ?").bind(portfolioId).first<any>();
     }
 
     const [positionsResult, tradesResult] = await Promise.all([
@@ -40,7 +41,7 @@ export class PaperTradingEngine {
            WHERE p.portfolio_id = ?
            ORDER BY p.opened_at DESC`
         )
-        .bind(row.id)
+        .bind(portfolioId)
         .all<any>(),
       db
         .prepare(
@@ -50,7 +51,7 @@ export class PaperTradingEngine {
            WHERE pt.portfolio_id = ?
            ORDER BY pt.executed_at DESC LIMIT 100`
         )
-        .bind(row.id)
+        .bind(portfolioId)
         .all<any>(),
     ]);
 
@@ -108,12 +109,13 @@ export class PaperTradingEngine {
       slippage_bps: t.slippage_bps,
     }));
 
-    const closedPositions = positions.filter(p => p.status === "closed");
-    const winningTrades = closedPositions.filter(p => (p.realized_pnl_usd || 0) > 0).length;
-    const losingTrades = closedPositions.filter(p => (p.realized_pnl_usd || 0) < 0).length;
-    const realizedPnlUsd = closedPositions.reduce((acc, curr) => acc + (curr.realized_pnl_usd || 0), 0);
-    const winRatePct = closedPositions.length > 0
-      ? Number(((winningTrades / closedPositions.length) * 100).toFixed(1))
+    // Aggregate realized P/L across ALL positions (both closed and open with partial exits)
+    const positionsWithRealized = positions.filter(p => (p.realized_pnl_usd || 0) !== 0);
+    const winningTrades = positionsWithRealized.filter(p => (p.realized_pnl_usd || 0) > 0).length;
+    const losingTrades = positionsWithRealized.filter(p => (p.realized_pnl_usd || 0) < 0).length;
+    const realizedPnlUsd = positions.reduce((acc, curr) => acc + (curr.realized_pnl_usd || 0), 0);
+    const winRatePct = positionsWithRealized.length > 0
+      ? Number(((winningTrades / positionsWithRealized.length) * 100).toFixed(1))
       : 0;
 
     const totalEquityUsd = Number((row.cash_balance + openPositionsValue).toFixed(4));
@@ -137,19 +139,19 @@ export class PaperTradingEngine {
     };
   }
 
-  static async resetPortfolio(db: D1Database, env: Env, bankroll?: number): Promise<PaperPortfolio> {
+  static async resetPortfolio(db: D1Database, env: Env, bankroll?: number, sessionId = "default"): Promise<PaperPortfolio> {
     const start = Math.max(1, Math.min(100000, Number(bankroll) || Number(env.PAPER_STARTING_BALANCE) || 100));
-    const portfolio = await this.getPortfolio(db, env);
+    const portfolio = await this.getPortfolio(db, env, sessionId);
 
     await db.batch([
       db.prepare("DELETE FROM paper_trades WHERE portfolio_id = ?").bind(portfolio.id),
       db.prepare("DELETE FROM paper_positions WHERE portfolio_id = ?").bind(portfolio.id),
       db.prepare(
         "UPDATE paper_portfolios SET starting_balance = ?, cash_balance = ?, last_operation_id = ?, config_json = ? WHERE id = ?"
-      ).bind(start, start, id(), JSON.stringify({ defaultBankroll: start, resetAt: now() }), portfolio.id),
+      ).bind(start, start, id(), JSON.stringify({ defaultBankroll: start, sessionId, resetAt: now() }), portfolio.id),
     ]);
 
-    return await this.getPortfolio(db, env);
+    return await this.getPortfolio(db, env, sessionId);
   }
 
   static async buy(
@@ -157,7 +159,9 @@ export class PaperTradingEngine {
     env: Env,
     mint: string,
     usdAmount: number,
-    slippageBps = 50
+    slippageBps = 50,
+    sessionId = "default",
+    triggerSignal?: string
   ): Promise<{
     positionId: string;
     mint: string;
@@ -175,7 +179,7 @@ export class PaperTradingEngine {
       throw new Error("USD amount must be at least $0.01");
     }
 
-    const portfolio = await this.getPortfolio(db, env);
+    const portfolio = await this.getPortfolio(db, env, sessionId);
     if (portfolio.cash_balance < usdAmount) {
       throw new Error(`Insufficient virtual cash: available $${portfolio.cash_balance.toFixed(2)}, required $${usdAmount.toFixed(2)}`);
     }
@@ -210,15 +214,15 @@ export class PaperTradingEngine {
         "UPDATE paper_portfolios SET cash_balance = cash_balance - ?, last_operation_id = ? WHERE id = ? AND cash_balance >= ?"
       ).bind(usdAmount, operationId, portfolio.id, usdAmount),
       db.prepare(
-        `INSERT INTO paper_positions (id, portfolio_id, mint, status, quantity, entry_price_usd, entry_value_usd, fees_usd, opened_at)
-         SELECT ?, ?, ?, 'open', ?, ?, ?, ?, ?
+        `INSERT INTO paper_positions (id, portfolio_id, session_id, mint, status, quantity, entry_price_usd, entry_value_usd, fees_usd, opened_at)
+         SELECT ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?
          WHERE EXISTS (SELECT 1 FROM paper_portfolios WHERE id = ? AND last_operation_id = ?)`
-      ).bind(positionId, portfolio.id, mint, quantity, simulatedFill, usdAmount, feeUsd, tradeTime, portfolio.id, operationId),
+      ).bind(positionId, portfolio.id, sessionId, mint, quantity, simulatedFill, usdAmount, feeUsd, tradeTime, portfolio.id, operationId),
       db.prepare(
-        `INSERT INTO paper_trades (id, portfolio_id, position_id, mint, side, executed_at, reference_price_usd, simulated_price_usd, quantity, notional_usd, fees_usd, slippage_bps)
-         SELECT ?, ?, ?, ?, 'buy', ?, ?, ?, ?, ?, ?, ?
+        `INSERT INTO paper_trades (id, portfolio_id, session_id, position_id, trigger_signal, mint, side, executed_at, reference_price_usd, simulated_price_usd, quantity, notional_usd, fees_usd, slippage_bps)
+         SELECT ?, ?, ?, ?, ?, ?, 'buy', ?, ?, ?, ?, ?, ?, ?
          WHERE EXISTS (SELECT 1 FROM paper_portfolios WHERE id = ? AND last_operation_id = ?)`
-      ).bind(id(), portfolio.id, positionId, mint, tradeTime, price, simulatedFill, quantity, usdAmount, feeUsd, effectiveSlippage, portfolio.id, operationId),
+      ).bind(id(), portfolio.id, sessionId, positionId, triggerSignal || null, mint, tradeTime, price, simulatedFill, quantity, usdAmount, feeUsd, effectiveSlippage, portfolio.id, operationId),
     ]);
 
     if (!results[0]?.meta.changes) {
@@ -241,15 +245,18 @@ export class PaperTradingEngine {
     db: D1Database,
     env: Env,
     positionId: string,
-    slippageBps = 50
+    slippageBps = 50,
+    sessionId = "default",
+    portion = 1.0 // 1.0 = full sell, 0.5 = 50% partial exit, 0.25 = 25% partial exit
   ): Promise<{
     positionId: string;
     mint: string;
     proceedsUsd: number;
     realizedPnlUsd: number;
     simulatedFill: number;
+    remainingQuantity: number;
   }> {
-    const portfolio = await this.getPortfolio(db, env);
+    const portfolio = await this.getPortfolio(db, env, sessionId);
     const position = await db
       .prepare("SELECT * FROM paper_positions WHERE id = ? AND portfolio_id = ? AND status = 'open'")
       .bind(positionId, portfolio.id)
@@ -271,27 +278,44 @@ export class PaperTradingEngine {
 
     const effectiveSlippage = Math.max(10, Math.min(500, slippageBps));
     const simulatedFill = price * (1 - effectiveSlippage / 10000);
-    const grossProceeds = position.quantity * simulatedFill;
+
+    // Calculate sell quantity based on portion
+    const sellPortion = Math.max(0.01, Math.min(1.0, portion));
+    const sellQuantity = position.quantity * sellPortion;
+    const remainingQuantity = position.quantity - sellQuantity;
+    const proportionalEntryValue = position.entry_value_usd * sellPortion;
+
+    const grossProceeds = sellQuantity * simulatedFill;
     const feeUsd = grossProceeds * 0.001;
     const netProceeds = grossProceeds - feeUsd;
-    const realizedPnl = netProceeds - position.entry_value_usd;
+    const realizedPnl = netProceeds - proportionalEntryValue;
 
     const operationId = id();
     const tradeTime = now();
+    const isFullExit = sellPortion >= 0.9999 || remainingQuantity <= 0.000001;
+
+    let positionUpdateQuery;
+    if (isFullExit) {
+      positionUpdateQuery = db.prepare(
+        "UPDATE paper_positions SET status = 'closed', closed_at = ?, exit_price_usd = ?, realized_pnl_usd = COALESCE(realized_pnl_usd, 0) + ?, quantity = 0, close_operation_id = ? WHERE id = ? AND portfolio_id = ? AND status = 'open'"
+      ).bind(tradeTime, simulatedFill, realizedPnl, operationId, positionId, portfolio.id);
+    } else {
+      positionUpdateQuery = db.prepare(
+        "UPDATE paper_positions SET quantity = ?, entry_value_usd = entry_value_usd - ?, realized_pnl_usd = COALESCE(realized_pnl_usd, 0) + ?, close_operation_id = ? WHERE id = ? AND portfolio_id = ? AND status = 'open'"
+      ).bind(remainingQuantity, proportionalEntryValue, realizedPnl, operationId, positionId, portfolio.id);
+    }
 
     const results = await db.batch([
-      db.prepare(
-        "UPDATE paper_positions SET status = 'closed', closed_at = ?, exit_price_usd = ?, realized_pnl_usd = ?, close_operation_id = ? WHERE id = ? AND portfolio_id = ? AND status = 'open'"
-      ).bind(tradeTime, simulatedFill, realizedPnl, operationId, positionId, portfolio.id),
+      positionUpdateQuery,
       db.prepare(
         `UPDATE paper_portfolios SET cash_balance = cash_balance + ?, last_operation_id = ?
-         WHERE id = ? AND EXISTS (SELECT 1 FROM paper_positions WHERE id = ? AND status = 'closed' AND close_operation_id = ?)`
+         WHERE id = ? AND EXISTS (SELECT 1 FROM paper_positions WHERE id = ? AND close_operation_id = ?)`
       ).bind(netProceeds, operationId, portfolio.id, positionId, operationId),
       db.prepare(
-        `INSERT INTO paper_trades (id, portfolio_id, position_id, mint, side, executed_at, reference_price_usd, simulated_price_usd, quantity, notional_usd, fees_usd, slippage_bps)
-         SELECT ?, ?, ?, ?, 'sell', ?, ?, ?, ?, ?, ?, ?
-         WHERE EXISTS (SELECT 1 FROM paper_positions WHERE id = ? AND status = 'closed' AND close_operation_id = ?)`
-      ).bind(id(), portfolio.id, positionId, position.mint, tradeTime, price, simulatedFill, position.quantity, grossProceeds, feeUsd, effectiveSlippage, positionId, operationId),
+        `INSERT INTO paper_trades (id, portfolio_id, session_id, position_id, mint, side, executed_at, reference_price_usd, simulated_price_usd, quantity, notional_usd, fees_usd, slippage_bps)
+         SELECT ?, ?, ?, ?, ?, 'sell', ?, ?, ?, ?, ?, ?, ?
+         WHERE EXISTS (SELECT 1 FROM paper_positions WHERE id = ? AND close_operation_id = ?)`
+      ).bind(id(), portfolio.id, sessionId, positionId, position.mint, tradeTime, price, simulatedFill, sellQuantity, grossProceeds, feeUsd, effectiveSlippage, positionId, operationId),
     ]);
 
     if (!results[0]?.meta.changes) {
@@ -304,6 +328,7 @@ export class PaperTradingEngine {
       proceedsUsd: netProceeds,
       realizedPnlUsd: realizedPnl,
       simulatedFill,
+      remainingQuantity: isFullExit ? 0 : remainingQuantity,
     };
   }
 }

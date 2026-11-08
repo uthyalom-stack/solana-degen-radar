@@ -57,9 +57,13 @@ export interface SecurityEvidence {
     mintAuthority?: boolean | null;
     freezeAuthority?: boolean | null;
     initialized?: boolean | null;
+    tokenProgram?: string | null;
+    transferFeePercent?: number | null;
+    hasTransferHook?: boolean | null;
     lpBurnedPercent?: number | null;
     top10HolderPercent?: number | null;
-    transferFeePercent?: number | null;
+    isSellable?: boolean | null;
+    sellabilityStatus?: "verified_sellable" | "honeypot" | "unverified";
     creatorAddress?: string | null;
     creatorTokensLaunched?: number | null;
     creatorRugRatePct?: number | null;
@@ -174,11 +178,12 @@ export interface WalletHolderRecord {
 export interface WalletRelationship {
     walletA: string;
     walletB: string;
-    relationshipType: "shared_funder" | "frequent_transfers" | "coordinated_buy" | "coordinated_exit";
+    relationshipType: "shared_funder" | "shared_funding" | "frequent_transfers" | "coordinated_buy" | "coordinated_exit";
     confidenceScore: number;
     evidence: {
         sharedFundingSource?: string;
         commonTxsCount?: number;
+        confirmedSharedFunding?: boolean;
         description: string;
     };
 }

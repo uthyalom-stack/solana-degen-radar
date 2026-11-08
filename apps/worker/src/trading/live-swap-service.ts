@@ -3,7 +3,85 @@ import type { LiveTransactionRecord } from "@radar/shared";
 
 export class LiveSwapService {
   /**
-   * Request live Jupiter quote
+   * Get dynamic decimals for token mint via RPC
+   */
+  static async getMintDecimals(env: Env, mint: string): Promise<number> {
+    if (mint === "So11111111111111111111111111111111111111112") return 9; // SOL has 9 decimals
+    const rpcUrl = env.HELIUS_API_KEY
+      ? `https://mainnet.helius-rpc.com/?api-key=${env.HELIUS_API_KEY}`
+      : (env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com");
+
+    try {
+      const res = await fetch(rpcUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "getTokenSupply",
+          params: [mint, { commitment: "confirmed" }],
+        }),
+      });
+      const data: any = await res.json();
+      return data?.result?.value?.decimals ?? 6;
+    } catch {
+      return 6; // Fallback to 6 decimals if RPC unreachable
+    }
+  }
+
+  /**
+   * Fetch SPL token balances (both Tokenkeg and Token-2022) for a wallet
+   */
+  static async getWalletSplBalances(env: Env, walletAddress: string): Promise<Array<{ mint: string; amount: string; decimals: number; uiAmount: number; program: string }>> {
+    const rpcUrl = env.HELIUS_API_KEY
+      ? `https://mainnet.helius-rpc.com/?api-key=${env.HELIUS_API_KEY}`
+      : (env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com");
+
+    const programs = [
+      { name: "Tokenkeg", id: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" },
+      { name: "Token-2022", id: "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb" },
+    ];
+
+    const allBalances: Array<{ mint: string; amount: string; decimals: number; uiAmount: number; program: string }> = [];
+
+    for (const prog of programs) {
+      try {
+        const res = await fetch(rpcUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "getTokenAccountsByOwner",
+            params: [
+              walletAddress,
+              { programId: prog.id },
+              { encoding: "jsonParsed", commitment: "confirmed" },
+            ],
+          }),
+        });
+        const data: any = await res.json();
+        const accounts = data?.result?.value || [];
+        for (const a of accounts) {
+          const info = a.account?.data?.parsed?.info;
+          allBalances.push({
+            mint: info?.mint,
+            amount: info?.tokenAmount?.amount || "0",
+            decimals: info?.tokenAmount?.decimals || 6,
+            uiAmount: info?.tokenAmount?.uiAmount || 0,
+            program: prog.name,
+          });
+        }
+      } catch {
+        // Fallback gracefully on program query failure
+      }
+    }
+
+    return allBalances;
+  }
+
+  /**
+   * Request live Jupiter quote with dynamic decimal support
    */
   static async getQuote(
     inputMint: string,
