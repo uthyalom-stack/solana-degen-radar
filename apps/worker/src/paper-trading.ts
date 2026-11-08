@@ -109,12 +109,13 @@ export class PaperTradingEngine {
       slippage_bps: t.slippage_bps,
     }));
 
-    const closedPositions = positions.filter(p => p.status === "closed");
-    const winningTrades = closedPositions.filter(p => (p.realized_pnl_usd || 0) > 0).length;
-    const losingTrades = closedPositions.filter(p => (p.realized_pnl_usd || 0) < 0).length;
-    const realizedPnlUsd = closedPositions.reduce((acc, curr) => acc + (curr.realized_pnl_usd || 0), 0);
-    const winRatePct = closedPositions.length > 0
-      ? Number(((winningTrades / closedPositions.length) * 100).toFixed(1))
+    // Aggregate realized P/L across ALL positions (both closed and open with partial exits)
+    const positionsWithRealized = positions.filter(p => (p.realized_pnl_usd || 0) !== 0);
+    const winningTrades = positionsWithRealized.filter(p => (p.realized_pnl_usd || 0) > 0).length;
+    const losingTrades = positionsWithRealized.filter(p => (p.realized_pnl_usd || 0) < 0).length;
+    const realizedPnlUsd = positions.reduce((acc, curr) => acc + (curr.realized_pnl_usd || 0), 0);
+    const winRatePct = positionsWithRealized.length > 0
+      ? Number(((winningTrades / positionsWithRealized.length) * 100).toFixed(1))
       : 0;
 
     const totalEquityUsd = Number((row.cash_balance + openPositionsValue).toFixed(4));
@@ -213,15 +214,15 @@ export class PaperTradingEngine {
         "UPDATE paper_portfolios SET cash_balance = cash_balance - ?, last_operation_id = ? WHERE id = ? AND cash_balance >= ?"
       ).bind(usdAmount, operationId, portfolio.id, usdAmount),
       db.prepare(
-        `INSERT INTO paper_positions (id, portfolio_id, mint, status, quantity, entry_price_usd, entry_value_usd, fees_usd, opened_at)
-         SELECT ?, ?, ?, 'open', ?, ?, ?, ?, ?
+        `INSERT INTO paper_positions (id, portfolio_id, session_id, mint, status, quantity, entry_price_usd, entry_value_usd, fees_usd, opened_at)
+         SELECT ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?
          WHERE EXISTS (SELECT 1 FROM paper_portfolios WHERE id = ? AND last_operation_id = ?)`
-      ).bind(positionId, portfolio.id, mint, quantity, simulatedFill, usdAmount, feeUsd, tradeTime, portfolio.id, operationId),
+      ).bind(positionId, portfolio.id, sessionId, mint, quantity, simulatedFill, usdAmount, feeUsd, tradeTime, portfolio.id, operationId),
       db.prepare(
-        `INSERT INTO paper_trades (id, portfolio_id, position_id, mint, side, executed_at, reference_price_usd, simulated_price_usd, quantity, notional_usd, fees_usd, slippage_bps)
-         SELECT ?, ?, ?, ?, 'buy', ?, ?, ?, ?, ?, ?, ?
+        `INSERT INTO paper_trades (id, portfolio_id, session_id, position_id, trigger_signal, mint, side, executed_at, reference_price_usd, simulated_price_usd, quantity, notional_usd, fees_usd, slippage_bps)
+         SELECT ?, ?, ?, ?, ?, ?, 'buy', ?, ?, ?, ?, ?, ?, ?
          WHERE EXISTS (SELECT 1 FROM paper_portfolios WHERE id = ? AND last_operation_id = ?)`
-      ).bind(id(), portfolio.id, positionId, mint, tradeTime, price, simulatedFill, quantity, usdAmount, feeUsd, effectiveSlippage, portfolio.id, operationId),
+      ).bind(id(), portfolio.id, sessionId, positionId, triggerSignal || null, mint, tradeTime, price, simulatedFill, quantity, usdAmount, feeUsd, effectiveSlippage, portfolio.id, operationId),
     ]);
 
     if (!results[0]?.meta.changes) {
@@ -277,27 +278,44 @@ export class PaperTradingEngine {
 
     const effectiveSlippage = Math.max(10, Math.min(500, slippageBps));
     const simulatedFill = price * (1 - effectiveSlippage / 10000);
-    const grossProceeds = position.quantity * simulatedFill;
+
+    // Calculate sell quantity based on portion
+    const sellPortion = Math.max(0.01, Math.min(1.0, portion));
+    const sellQuantity = position.quantity * sellPortion;
+    const remainingQuantity = position.quantity - sellQuantity;
+    const proportionalEntryValue = position.entry_value_usd * sellPortion;
+
+    const grossProceeds = sellQuantity * simulatedFill;
     const feeUsd = grossProceeds * 0.001;
     const netProceeds = grossProceeds - feeUsd;
-    const realizedPnl = netProceeds - position.entry_value_usd;
+    const realizedPnl = netProceeds - proportionalEntryValue;
 
     const operationId = id();
     const tradeTime = now();
+    const isFullExit = sellPortion >= 0.9999 || remainingQuantity <= 0.000001;
+
+    let positionUpdateQuery;
+    if (isFullExit) {
+      positionUpdateQuery = db.prepare(
+        "UPDATE paper_positions SET status = 'closed', closed_at = ?, exit_price_usd = ?, realized_pnl_usd = COALESCE(realized_pnl_usd, 0) + ?, quantity = 0, close_operation_id = ? WHERE id = ? AND portfolio_id = ? AND status = 'open'"
+      ).bind(tradeTime, simulatedFill, realizedPnl, operationId, positionId, portfolio.id);
+    } else {
+      positionUpdateQuery = db.prepare(
+        "UPDATE paper_positions SET quantity = ?, entry_value_usd = entry_value_usd - ?, realized_pnl_usd = COALESCE(realized_pnl_usd, 0) + ?, close_operation_id = ? WHERE id = ? AND portfolio_id = ? AND status = 'open'"
+      ).bind(remainingQuantity, proportionalEntryValue, realizedPnl, operationId, positionId, portfolio.id);
+    }
 
     const results = await db.batch([
-      db.prepare(
-        "UPDATE paper_positions SET status = 'closed', closed_at = ?, exit_price_usd = ?, realized_pnl_usd = ?, close_operation_id = ? WHERE id = ? AND portfolio_id = ? AND status = 'open'"
-      ).bind(tradeTime, simulatedFill, realizedPnl, operationId, positionId, portfolio.id),
+      positionUpdateQuery,
       db.prepare(
         `UPDATE paper_portfolios SET cash_balance = cash_balance + ?, last_operation_id = ?
-         WHERE id = ? AND EXISTS (SELECT 1 FROM paper_positions WHERE id = ? AND status = 'closed' AND close_operation_id = ?)`
+         WHERE id = ? AND EXISTS (SELECT 1 FROM paper_positions WHERE id = ? AND close_operation_id = ?)`
       ).bind(netProceeds, operationId, portfolio.id, positionId, operationId),
       db.prepare(
-        `INSERT INTO paper_trades (id, portfolio_id, position_id, mint, side, executed_at, reference_price_usd, simulated_price_usd, quantity, notional_usd, fees_usd, slippage_bps)
-         SELECT ?, ?, ?, ?, 'sell', ?, ?, ?, ?, ?, ?, ?
-         WHERE EXISTS (SELECT 1 FROM paper_positions WHERE id = ? AND status = 'closed' AND close_operation_id = ?)`
-      ).bind(id(), portfolio.id, positionId, position.mint, tradeTime, price, simulatedFill, position.quantity, grossProceeds, feeUsd, effectiveSlippage, positionId, operationId),
+        `INSERT INTO paper_trades (id, portfolio_id, session_id, position_id, mint, side, executed_at, reference_price_usd, simulated_price_usd, quantity, notional_usd, fees_usd, slippage_bps)
+         SELECT ?, ?, ?, ?, ?, 'sell', ?, ?, ?, ?, ?, ?, ?
+         WHERE EXISTS (SELECT 1 FROM paper_positions WHERE id = ? AND close_operation_id = ?)`
+      ).bind(id(), portfolio.id, sessionId, positionId, position.mint, tradeTime, price, simulatedFill, sellQuantity, grossProceeds, feeUsd, effectiveSlippage, positionId, operationId),
     ]);
 
     if (!results[0]?.meta.changes) {
@@ -310,7 +328,7 @@ export class PaperTradingEngine {
       proceedsUsd: netProceeds,
       realizedPnlUsd: realizedPnl,
       simulatedFill,
-      remainingQuantity: 0,
+      remainingQuantity: isFullExit ? 0 : remainingQuantity,
     };
   }
 }

@@ -71,11 +71,43 @@ export class SolanaRpcClient {
       let transferFeePercent: number | null = null;
       let hasTransferHook = false;
 
-      // Inspect Token-2022 extensions if buffer is larger than standard 82 bytes
+      // Official Token-2022 Mint binary layout:
+      // Base mint: 82 bytes (offset 0..81)
+      // Account type tag: 1 byte at offset 82 (value 1 for Mint)
+      // Alignment padding to 4-byte boundary: offset 84 starts the extension TLV entries
       if (isToken2022 && bytes.length > 82) {
-        // Look for extension types: TransferFeeConfig (type 1) or TransferHook (type 14)
-        if (bytes.length > 100) {
-          transferFeePercent = 0; // Configured without fee unless fee extension identified
+        let offset = bytes.length >= 84 ? 84 : 82;
+        while (offset + 4 <= bytes.length) {
+          const extType = view.getUint16(offset, true);
+          const extLen = view.getUint16(offset + 2, true);
+          const dataStart = offset + 4;
+
+          if (dataStart + extLen > bytes.length) break;
+
+          // Type 1: TransferFeeConfig (official spl-token-2022 layout)
+          // 0..31: transfer_fee_config_authority (32 bytes)
+          // 32..63: withdraw_withheld_authority (32 bytes)
+          // 64..71: withheld_amount (8 bytes uint64)
+          // 72..89: older_transfer_fee (epoch:8, max_fee:8, transfer_fee_basis_points:2) -> 18 bytes
+          // 90..107: newer_transfer_fee (epoch:8, max_fee:8, transfer_fee_basis_points:2) -> 18 bytes
+          // newer_transfer_fee.transfer_fee_basis_points is at dataStart + 106
+          if (extType === 1 && extLen >= 108) {
+            const feeBps = view.getUint16(dataStart + 106, true);
+            transferFeePercent = feeBps / 100;
+          } else if (extType === 1 && extLen >= 90) {
+            // Older fee fallback if newer fee not reached
+            const feeBps = view.getUint16(dataStart + 88, true);
+            transferFeePercent = feeBps / 100;
+          }
+
+          // Type 14: TransferHook (official spl-token-2022 layout)
+          // 0..31: authority (32 bytes)
+          // 32..63: program_id (32 bytes)
+          if (extType === 14 && extLen >= 64) {
+            hasTransferHook = true;
+          }
+
+          offset = dataStart + extLen;
         }
       }
 
@@ -94,28 +126,45 @@ export class SolanaRpcClient {
   }
 
   /**
-   * Verify LP Burn by checking pool token supply burned in burn address
+   * Verify LP Burn by resolving token account owners and checking token supply owned by burn addresses
    */
   async verifyLpBurn(lpMint: string): Promise<number | null> {
     try {
-      const BURN_ADDRESS = "11111111111111111111111111111111";
-      const largest = await this.rpcCall<{ value: Array<{ address: string; amount: string }> }>("getTokenLargestAccounts", [
-        lpMint,
-        { commitment: "confirmed" },
+      // Verified Solana burn addresses:
+      // 1. Solana System Program (tokens transferred to an account owned by System Program cannot be transferred out)
+      // 2. Solana Incinerator
+      const BURN_ADDRESSES = new Set([
+        "11111111111111111111111111111111",
+        "1nc1nerator11111111111111111111111111111111",
       ]);
-      const supply = await this.rpcCall<{ value: { amount: string } }>("getTokenSupply", [
-        lpMint,
-        { commitment: "confirmed" },
+
+      const [largest, supply] = await Promise.all([
+        this.rpcCall<{ value: Array<{ address: string; amount: string }> }>("getTokenLargestAccounts", [
+          lpMint,
+          { commitment: "confirmed" },
+        ]),
+        this.rpcCall<{ value: { amount: string } }>("getTokenSupply", [
+          lpMint,
+          { commitment: "confirmed" },
+        ]),
       ]);
 
       const totalSupply = Number(supply?.value?.amount) || 0;
-      if (totalSupply <= 0 || !largest?.value) return null;
+      if (totalSupply <= 0 || !largest?.value || !largest.value.length) return null;
 
-      const burnedAcct = largest.value.find(a => a.address === BURN_ADDRESS);
-      if (!burnedAcct) return 0;
+      // Resolve true owners of the top LP accounts
+      const accountAddresses = largest.value.map(a => a.address);
+      const ownerMap = await this.resolveTokenAccountOwners(accountAddresses);
 
-      const burnedAmount = Number(burnedAcct.amount) || 0;
-      return Math.min(100, (burnedAmount / totalSupply) * 100);
+      let burnedAmount = 0;
+      for (const account of largest.value) {
+        const owner = ownerMap.get(account.address) || account.address;
+        if (BURN_ADDRESSES.has(owner)) {
+          burnedAmount += Number(account.amount) || 0;
+        }
+      }
+
+      return Math.min(100, Number(((burnedAmount / totalSupply) * 100).toFixed(2)));
     } catch {
       return null;
     }
@@ -184,6 +233,103 @@ export class SolanaRpcClient {
       };
     } catch {
       return { top10HolderPercent: null, holderCount: null, accounts: [], totalSupply: 0 };
+    }
+  }
+
+  /**
+   * Resolve true wallet owners for SPL token accounts (reading owner at bytes 32..64)
+   */
+  async resolveTokenAccountOwners(tokenAccounts: string[]): Promise<Map<string, string>> {
+    const ownerMap = new Map<string, string>();
+    if (!tokenAccounts.length) return ownerMap;
+
+    try {
+      const accountsInfo = await this.rpcCall<{ value: Array<{ data: [string, string] } | null> }>("getMultipleAccounts", [
+        tokenAccounts.slice(0, 20),
+        { encoding: "base64", commitment: "confirmed" },
+      ]);
+
+      const base58Chars = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+      const toBase58 = (bytes: Uint8Array): string => {
+        const digits = [0];
+        for (let i = 0; i < bytes.length; i++) {
+          let carry = bytes[i];
+          for (let j = 0; j < digits.length; j++) {
+            carry += digits[j] << 8;
+            digits[j] = carry % 58;
+            carry = (carry / 58) | 0;
+          }
+          while (carry > 0) {
+            digits.push(carry % 58);
+            carry = (carry / 58) | 0;
+          }
+        }
+        let str = "";
+        for (let i = 0; i < bytes.length && bytes[i] === 0; i++) str += "1";
+        for (let i = digits.length - 1; i >= 0; i--) str += base58Chars[digits[i]];
+        return str;
+      };
+
+      const values = accountsInfo?.value || [];
+      for (let i = 0; i < values.length; i++) {
+        const info = values[i];
+        const accountAddress = tokenAccounts[i];
+        if (!info || !info.data?.[0]) {
+          ownerMap.set(accountAddress, accountAddress);
+          continue;
+        }
+
+        const bytes = Uint8Array.from(atob(info.data[0]), c => c.charCodeAt(0));
+        if (bytes.length >= 64) {
+          const ownerBytes = bytes.slice(32, 64);
+          const ownerPubkey = toBase58(ownerBytes);
+          ownerMap.set(accountAddress, ownerPubkey);
+        } else {
+          ownerMap.set(accountAddress, accountAddress);
+        }
+      }
+      return ownerMap;
+    } catch {
+      return ownerMap;
+    }
+  }
+
+  /**
+   * Fetch and parse actual transaction details for shared funding analysis
+   */
+  async getParsedTransaction(signature: string): Promise<{
+    signature: string;
+    blockTime: number | null;
+    transfers: Array<{ from: string; to: string; lamports: number }>;
+  } | null> {
+    try {
+      const tx = await this.rpcCall<any>("getTransaction", [
+        signature,
+        { encoding: "jsonParsed", maxSupportedTransactionVersion: 0 },
+      ]);
+
+      if (!tx) return null;
+      const transfers: Array<{ from: string; to: string; lamports: number }> = [];
+
+      const instructions = tx.transaction?.message?.instructions || [];
+      for (const ix of instructions) {
+        if (ix.program === "system" && ix.parsed?.type === "transfer") {
+          const info = ix.parsed.info;
+          transfers.push({
+            from: info.source,
+            to: info.destination,
+            lamports: Number(info.lamports) || 0,
+          });
+        }
+      }
+
+      return {
+        signature,
+        blockTime: tx.blockTime,
+        transfers,
+      };
+    } catch {
+      return null;
     }
   }
 

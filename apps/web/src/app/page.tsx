@@ -189,14 +189,31 @@ const parseList = (value?: string) => {
   }
 };
 
+// Client-side authentication token support (configured via localStorage or environment)
+function getStoredAuthSecret(): string {
+  if (typeof window !== "undefined") {
+    return localStorage.getItem("radar_auth_secret") || process.env.NEXT_PUBLIC_RADAR_SECRET || "radar-local-dev-secret";
+  }
+  return process.env.NEXT_PUBLIC_RADAR_SECRET || "radar-local-dev-secret";
+}
+
 async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const url = `${API}${path}`;
+  const secret = getStoredAuthSecret();
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    ...(secret ? { "x-radar-secret": secret } : {}),
+    ...(init?.headers as Record<string, string> || {}),
+  };
+
+  // Attach idempotency key for non-idempotent state mutations
+  if (init?.method && ["POST", "PUT", "DELETE"].includes(init.method.toUpperCase()) && !headers["x-idempotency-key"]) {
+    headers["x-idempotency-key"] = `idemp-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+  }
+
   const response = await fetch(url, {
     ...init,
-    headers: {
-      "content-type": "application/json",
-      ...(init?.headers || {}),
-    },
+    headers,
     credentials: "include",
     cache: "no-store",
   });
@@ -293,6 +310,7 @@ export default function Home() {
   const [customRpcUrl, setCustomRpcUrl] = useState("https://api.mainnet-beta.solana.com");
   const [slippageToleranceBps, setSlippageToleranceBps] = useState(50);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
 
   const refresh = useCallback(async () => {
@@ -345,6 +363,8 @@ export default function Home() {
 
       // Listen for account changes
       provider.on("accountChanged", (publicKey: any) => {
+        setLiveQuote(null);
+        setTxStatus(null);
         if (publicKey) {
           setPhantomAddress(publicKey.toString());
           void fetchSolBalance(publicKey.toString());
@@ -500,10 +520,19 @@ export default function Home() {
     setError("");
     try {
       const lamports = Math.floor(solAmount * 1_000_000_000);
+      let decimals = 6;
+      try {
+        const decData = await apiRequest<any>(`/api/tokens/${outputMint}/decimals`);
+        if (decData && Number.isFinite(decData.decimals)) {
+          decimals = Number(decData.decimals);
+        }
+      } catch {
+        decimals = 6;
+      }
       const quote = await apiRequest<any>(
         `/api/swap/quote?inputMint=So11111111111111111111111111111111111111112&outputMint=${outputMint}&amount=${lamports}&slippageBps=${slippageToleranceBps}`
       );
-      setLiveQuote(quote);
+      setLiveQuote({ ...quote, decimals });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to fetch Jupiter swap quote");
       setLiveQuote(null);
@@ -554,7 +583,7 @@ export default function Home() {
           inputMint: "So11111111111111111111111111111111111111112",
           outputMint: liveSwapMint,
           inputAmount: Number(liveSwapAmount),
-          outputAmount: Number(liveQuote.outAmount) / 1_000_000,
+          outputAmount: Number(liveQuote.outAmount) / (10 ** (liveQuote.decimals || 6)),
           slippageBps: slippageToleranceBps,
           priceImpactPct: liveQuote.priceImpactPct,
           routePlan: liveQuote.routePlan,
@@ -671,8 +700,8 @@ export default function Home() {
 
   return (
     <div className="app-layout">
-      {/* Desktop / Tablet Sidebar */}
-      <aside className={`sidebar ${sidebarCollapsed ? "collapsed" : ""}`}>
+      {/* Desktop / Tablet Sidebar with mobile-open support */}
+      <aside className={`sidebar ${sidebarCollapsed ? "collapsed" : ""} ${mobileOpen ? "mobile-open" : ""}`}>
         <div className="sidebar-header">
           {!sidebarCollapsed && (
             <div className="brand">
@@ -729,7 +758,13 @@ export default function Home() {
             <button
               className="button outline"
               style={{ padding: "6px 10px", fontSize: 13, display: "inline-flex" }}
-              onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+              onClick={() => {
+                if (window.innerWidth <= 960) {
+                  setMobileOpen(!mobileOpen);
+                } else {
+                  setSidebarCollapsed(!sidebarCollapsed);
+                }
+              }}
             >
               ☰
             </button>
@@ -1400,7 +1435,7 @@ export default function Home() {
                         <span className="muted small">Receive:</span>
                         <strong style={{ color: "#86efac" }}>
                           {" "}
-                          ~{compact(Number(liveQuote.outAmount) / 1_000_000)} tokens
+                          ~{compact(Number(liveQuote.outAmount) / (10 ** (liveQuote.decimals || 6)))} tokens
                         </strong>
                       </div>
                     </div>

@@ -30,42 +30,54 @@ export class LiveSwapService {
   }
 
   /**
-   * Fetch SPL token balances for a wallet
+   * Fetch SPL token balances (both Tokenkeg and Token-2022) for a wallet
    */
-  static async getWalletSplBalances(env: Env, walletAddress: string): Promise<Array<{ mint: string; amount: string; decimals: number; uiAmount: number }>> {
+  static async getWalletSplBalances(env: Env, walletAddress: string): Promise<Array<{ mint: string; amount: string; decimals: number; uiAmount: number; program: string }>> {
     const rpcUrl = env.HELIUS_API_KEY
       ? `https://mainnet.helius-rpc.com/?api-key=${env.HELIUS_API_KEY}`
       : (env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com");
 
-    try {
-      const res = await fetch(rpcUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: 1,
-          method: "getTokenAccountsByOwner",
-          params: [
-            walletAddress,
-            { programId: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" },
-            { encoding: "jsonParsed", commitment: "confirmed" },
-          ],
-        }),
-      });
-      const data: any = await res.json();
-      const accounts = data?.result?.value || [];
-      return accounts.map((a: any) => {
-        const info = a.account?.data?.parsed?.info;
-        return {
-          mint: info?.mint,
-          amount: info?.tokenAmount?.amount || "0",
-          decimals: info?.tokenAmount?.decimals || 6,
-          uiAmount: info?.tokenAmount?.uiAmount || 0,
-        };
-      });
-    } catch {
-      return [];
+    const programs = [
+      { name: "Tokenkeg", id: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" },
+      { name: "Token-2022", id: "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb" },
+    ];
+
+    const allBalances: Array<{ mint: string; amount: string; decimals: number; uiAmount: number; program: string }> = [];
+
+    for (const prog of programs) {
+      try {
+        const res = await fetch(rpcUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "getTokenAccountsByOwner",
+            params: [
+              walletAddress,
+              { programId: prog.id },
+              { encoding: "jsonParsed", commitment: "confirmed" },
+            ],
+          }),
+        });
+        const data: any = await res.json();
+        const accounts = data?.result?.value || [];
+        for (const a of accounts) {
+          const info = a.account?.data?.parsed?.info;
+          allBalances.push({
+            mint: info?.mint,
+            amount: info?.tokenAmount?.amount || "0",
+            decimals: info?.tokenAmount?.decimals || 6,
+            uiAmount: info?.tokenAmount?.uiAmount || 0,
+            program: prog.name,
+          });
+        }
+      } catch {
+        // Fallback gracefully on program query failure
+      }
     }
+
+    return allBalances;
   }
 
   /**

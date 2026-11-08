@@ -355,17 +355,21 @@ export class WalletIntelligenceEngine {
         const wA = nonPoolHolders[i].address;
         const wB = nonPoolHolders[j].address;
 
-        // 1. Check for verified shared funding or direct transactions in wallet_activities
-        const sharedTxActivity = await db
+        // 1. Check for verified shared funding (e.g. funded_by:<funder> matching)
+        const commonFunder = await db
           .prepare(
-            `SELECT COUNT(DISTINCT signature) as count FROM wallet_activities
-             WHERE wallet_address IN (?, ?) AND signature IS NOT NULL
-             GROUP BY signature HAVING COUNT(DISTINCT wallet_address) = 2`
+            `SELECT a1.activity_type as funder
+             FROM wallet_activities a1
+             JOIN wallet_activities a2 ON a1.activity_type = a2.activity_type
+             WHERE a1.wallet_address = ? AND a2.wallet_address = ?
+               AND a1.activity_type LIKE 'funded_by:%'
+             LIMIT 1`
           )
           .bind(wA, wB)
           .first<any>();
 
-        const sharedTxs = Number(sharedTxActivity?.count) || 0;
+        const sharedFunder = commonFunder?.funder ? commonFunder.funder.replace('funded_by:', '') : null;
+        const sharedTxs = sharedFunder ? 1 : 0;
 
         // 2. Check if both wallets appear in snapshots of other tokens (inferred co-holding)
         const sharedTokens = await db
