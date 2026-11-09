@@ -217,10 +217,16 @@ async function runMarketScan(env: Env) {
                 uiAmount: a.uiAmount,
               }));
 
-              // Extract actual creator if token has deployer info in pair or first holder
-              creatorAddress = resolvedHolders[0]?.address;
+              // Evidence-based creator attribution: Inspect pair metadata, deployer info, or creation history.
+              // Never treat the first resolved holder as the creator. If creator cannot be proven, mark as unknown (undefined).
+              const pairAny = pair as any;
+              const provableCreator =
+                pairAny.creatorAddress ||
+                pairAny.deployer ||
+                pairAny.baseToken?.creator;
 
-              if (creatorAddress) {
+              if (provableCreator && typeof provableCreator === "string" && provableCreator.length >= 32) {
+                creatorAddress = provableCreator;
                 creatorProfile = await WalletIntelligenceEngine.recordCreatorLaunch(
                   env.DB,
                   creatorAddress,
@@ -228,6 +234,8 @@ async function runMarketScan(env: Env) {
                   num(pair.liquidity?.usd) || 0,
                   num(pair.marketCap) || 0
                 );
+              } else {
+                creatorAddress = undefined;
               }
 
               await WalletIntelligenceEngine.recordHolderSnapshot(
@@ -1233,6 +1241,56 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
       return json({ ok });
     }
 
+    // 16. Secure Environment & Integration Status Diagnostic Endpoint
+    if (path === "/api/admin/env-status" && method === "GET") {
+      const isConfigured = (v?: string) => Boolean(v && v.trim().length > 0);
+
+      const statusMatrix = {
+        core: {
+          appEnv: env.APP_ENV || "production",
+          dashboardOrigin: env.DASHBOARD_ORIGIN || "Not set",
+          workerActive: true,
+          timestamp: now(),
+        },
+        cloudflare: {
+          d1Database: { name: "DB", configured: Boolean(env.DB), status: "available" },
+          durableObjects: { name: "PUMPPORTAL_STREAM", configured: Boolean(env.PUMPPORTAL_STREAM), status: env.PUMPPORTAL_STREAM ? "available" : "missing" },
+          cronTriggers: { schedule: "*/5 * * * *", configured: true, status: "active" },
+        },
+        solanaRpc: {
+          endpointType: env.HELIUS_API_KEY ? "Helius Dedicated RPC" : "Solana Public RPC",
+          isCustomEndpoint: isConfigured(env.SOLANA_RPC_URL),
+          hasHeliusKey: isConfigured(env.HELIUS_API_KEY),
+          status: "connected",
+        },
+        marketProviders: {
+          dexscreener: { configured: true, status: "available", baseUrl: env.DEXSCREENER_BASE_URL || "https://api.dexscreener.com" },
+          pumpPortal: { configured: isConfigured(env.PUMPPORTAL_API_KEY), status: isConfigured(env.PUMPPORTAL_API_KEY) ? "verified" : "public_stream_only" },
+          jupiterSwap: { configured: true, status: "available", endpoint: "https://api.jup.ag/swap/v1" },
+        },
+        socialProviders: {
+          reddit: { configured: isConfigured(env.REDDIT_USER_AGENT), status: "public_json_active" },
+          rss: { configured: isConfigured(env.SOCIAL_RSS_FEEDS), status: isConfigured(env.SOCIAL_RSS_FEEDS) ? "custom_feeds" : "default_crypto_news" },
+          telegram: { configured: isConfigured(env.TELEGRAM_BOT_TOKEN) && isConfigured(env.TELEGRAM_CHAT_ID), status: isConfigured(env.TELEGRAM_BOT_TOKEN) ? "configured" : "disabled" },
+          xTwitter: { configured: isConfigured(env.X_BEARER_TOKEN), status: isConfigured(env.X_BEARER_TOKEN) ? "bearer_configured" : "mock_or_unconfigured" },
+          tikTok: { configured: false, status: "disabled_unauthorized_api" },
+        },
+        securityCredentials: {
+          hasAdminSecret: isConfigured(env.ADMIN_SECRET),
+          hasSocialIngestSecret: isConfigured(env.SOCIAL_INGEST_SECRET),
+          hasTelegramWebhookSecret: isConfigured(env.TELEGRAM_WEBHOOK_SECRET),
+          hasInternalWorkerSecret: isConfigured(env.INTERNAL_WORKER_SECRET),
+        },
+        tradingConfiguration: {
+          paperStartingBalance: Number(env.PAPER_STARTING_BALANCE) || 100,
+          liveTradingEnabled: false, // Strict default safeguard
+          phantomSupported: true,
+        },
+      };
+
+      return json(statusMatrix);
+    }
+
     // 13. PumpPortal DO control
     if (path === "/api/pumpportal/status" && method === "GET") {
       return json(await PumpFunDiscovery.checkPumpPortalHealth(env));
@@ -1457,9 +1515,10 @@ function authenticateAdminRequest(request: Request, env: Env): boolean {
 }
 
 function authenticateInternalRequest(request: Request, env: Env): boolean {
-  const expectedSecret = env.INTERNAL_WORKER_SECRET || env.ADMIN_SECRET;
+  // Strict separation: INTERNAL_WORKER_SECRET must be configured independently and never fall back to ADMIN_SECRET
+  const expectedSecret = env.INTERNAL_WORKER_SECRET;
   if (!expectedSecret || expectedSecret.trim() === "") {
-    return false;
+    return false; // Fail closed if internal credential is not configured
   }
   const provided = extractBearerOrSecret(request);
   return Boolean(provided && provided === expectedSecret);

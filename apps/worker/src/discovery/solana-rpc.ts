@@ -95,6 +95,12 @@ export class SolanaRpcClient {
 
           if (dataStart + extLen > bytes.length) break;
 
+          // Official SPL Token-2022 extension type identifiers:
+          // TransferFeeConfig = 1
+          // DefaultAccountState = 6
+          // NonTransferable = 9
+          // PermanentDelegate = 12
+          // TransferHook = 14
           switch (extType) {
             case 1: { // TransferFeeConfig
               detectedExtensions.push("TransferFeeConfig");
@@ -107,23 +113,24 @@ export class SolanaRpcClient {
               }
               break;
             }
-            case 2: { // DefaultAccountState
+            case 6: { // DefaultAccountState (Official Type 6)
               detectedExtensions.push("DefaultAccountState");
+              // SPL Token AccountState enum: 0 = Uninitialized, 1 = Initialized, 2 = Frozen
               const stateByte = bytes[dataStart];
-              defaultAccountState = stateByte === 1 ? "uninitialized" : stateByte === 2 ? "initialized" : stateByte === 3 ? "frozen" : "unknown";
+              defaultAccountState = stateByte === 0 ? "uninitialized" : stateByte === 1 ? "initialized" : stateByte === 2 ? "frozen" : "unknown";
               break;
             }
-            case 3: { // PermanentDelegate
-              detectedExtensions.push("PermanentDelegate");
-              hasPermanentDelegate = true;
-              break;
-            }
-            case 9: { // NonTransferable
+            case 9: { // NonTransferable (Official Type 9)
               detectedExtensions.push("NonTransferable");
               hasNonTransferable = true;
               break;
             }
-            case 14: { // TransferHook
+            case 12: { // PermanentDelegate (Official Type 12)
+              detectedExtensions.push("PermanentDelegate");
+              hasPermanentDelegate = true;
+              break;
+            }
+            case 14: { // TransferHook (Official Type 14)
               detectedExtensions.push("TransferHook");
               if (extLen >= 64) {
                 hasTransferHook = true;

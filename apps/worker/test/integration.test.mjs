@@ -34,8 +34,8 @@ test("Token-2022 TLV Layout correctly parses TransferFeeConfig and TransferHook 
   view.setUint16(278, 14, true); // Type 14
   view.setUint16(280, 64, true); // Length 64
 
-  // Offset 346: Extension 3 (PermanentDelegate)
-  view.setUint16(346, 3, true); // Type 3
+  // Offset 346: Extension 3 (PermanentDelegate - Official Type 12)
+  view.setUint16(346, 12, true); // Type 12
   view.setUint16(348, 32, true); // Length 32
 
   // Offset 382: Extension 4 (Unknown extension)
@@ -60,7 +60,7 @@ test("Token-2022 TLV Layout correctly parses TransferFeeConfig and TransferHook 
       transferFeePercent = feeBps / 100;
     } else if (extType === 14 && extLen >= 64) {
       hasTransferHook = true;
-    } else if (extType === 3 && extLen >= 32) {
+    } else if (extType === 12 && extLen >= 32) {
       hasPermanentDelegate = true;
     } else if (extType === 999) {
       unknownExtensions.push(extType);

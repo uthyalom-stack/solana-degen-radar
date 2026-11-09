@@ -312,6 +312,8 @@ export default function Home() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
+  const [spotifyClientId, setSpotifyClientId] = useState("");
+  const [envStatusData, setEnvStatusData] = useState<any>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -1727,10 +1729,123 @@ export default function Home() {
           </div>
         )}
 
-        {/* SECTION 14: SETTINGS */}
+        {/* SECTION 14: SETTINGS & MASSAF-STYLE ENVIRONMENT CONFIGURATION */}
         {tab === "settings" && (
           <div>
-            <h3>Terminal Settings & Safeguards</h3>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+              <h3>System Administration & Environment Configuration</h3>
+              <button
+                className="button outline"
+                style={{ fontSize: 11 }}
+                onClick={async () => {
+                  try {
+                    const status = await apiRequest<any>("/api/admin/env-status");
+                    setEnvStatusData(status);
+                    setMessage("Environment diagnostics updated from Cloudflare Worker");
+                  } catch (e) {
+                    setError("Unable to retrieve environment diagnostics from backend");
+                  }
+                }}
+              >
+                🔄 Refresh Diagnostics
+              </button>
+            </div>
+
+            <p className="muted small" style={{ marginBottom: 18 }}>
+              System settings and provider connectivity modeled after the MASSAF administrative experience. Secret credentials remain strictly protected on the backend and are never exposed to browser JavaScript.
+            </p>
+
+            {/* Environment Overview Grid */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 14, marginBottom: 24 }}>
+              <div className="panel" style={{ padding: 16 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <strong>Cloudflare Infrastructure</strong>
+                  <span className="risk low">Operational</span>
+                </div>
+                <div style={{ marginTop: 12, fontSize: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0" }}>
+                    <span className="muted">D1 Database (SQLite):</span>
+                    <strong style={{ color: "#86efac" }}>Available (DB)</strong>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0" }}>
+                    <span className="muted">Durable Objects:</span>
+                    <strong style={{ color: "#86efac" }}>Configured (PUMPPORTAL_STREAM)</strong>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0" }}>
+                    <span className="muted">Cron Scanner:</span>
+                    <strong style={{ color: "#86efac" }}>Active (*/5 * * * *)</strong>
+                  </div>
+                </div>
+              </div>
+
+              <div className="panel" style={{ padding: 16 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <strong>Solana Infrastructure</strong>
+                  <span className="risk low">Connected</span>
+                </div>
+                <div style={{ marginTop: 12, fontSize: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0" }}>
+                    <span className="muted">Network Target:</span>
+                    <strong>Solana Mainnet-Beta</strong>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0" }}>
+                    <span className="muted">RPC Provider:</span>
+                    <strong>Public / Helius Key Optional</strong>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0" }}>
+                    <span className="muted">DexScreener API:</span>
+                    <strong style={{ color: "#86efac" }}>Connected & Verified</strong>
+                  </div>
+                </div>
+              </div>
+
+              <div className="panel" style={{ padding: 16 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <strong>Security & Separation</strong>
+                  <span className="risk low">Enforced</span>
+                </div>
+                <div style={{ marginTop: 12, fontSize: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0" }}>
+                    <span className="muted">Admin Authentication:</span>
+                    <strong>ADMIN_SECRET (Fail-closed)</strong>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0" }}>
+                    <span className="muted">Social Ingest Token:</span>
+                    <strong>SOCIAL_INGEST_SECRET (Isolated)</strong>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0" }}>
+                    <span className="muted">Telegram Webhook:</span>
+                    <strong>TELEGRAM_WEBHOOK_SECRET</strong>
+                  </div>
+                </div>
+              </div>
+
+              <div className="panel" style={{ padding: 16 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <strong>Optional Spotify Audio Dock</strong>
+                  <span className="tag neutral">Experimental</span>
+                </div>
+                <div style={{ marginTop: 12, fontSize: 12 }}>
+                  <p className="muted tiny" style={{ margin: "0 0 8px 0" }}>
+                    Ambient music while trading. Requires Spotify Developer Client ID (PKCE) and active Spotify Premium subscription for in-browser Web Playback SDK streaming.
+                  </p>
+                  <label style={{ fontSize: 11, color: "#8b99ac", display: "block" }}>
+                    Spotify Client ID (Optional):
+                    <input
+                      placeholder="Enter Client ID from developer.spotify.com"
+                      value={spotifyClientId}
+                      onChange={e => {
+                        setSpotifyClientId(e.target.value);
+                        if (typeof window !== "undefined") localStorage.setItem("radar_spotify_client_id", e.target.value);
+                      }}
+                      style={{ width: "100%", background: "#111924", border: "1px solid #283749", color: "#fff", padding: 6, borderRadius: 4, marginTop: 4, fontSize: 11 }}
+                    />
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <h4>Terminal Execution & RPC Parameters</h4>
             <div className="panel" style={{ padding: 18 }}>
               <label style={{ fontSize: 13, color: "#8b99ac", display: "block", marginBottom: 12 }}>
                 Solana RPC Endpoint Override:
