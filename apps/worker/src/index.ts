@@ -1078,36 +1078,63 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
         let mint = String(body.mint || "");
         let txSignature = body.txSignature ? String(body.txSignature) : null;
 
-        // Verify authenticity against D1 records:
-        if (tradeType === "PAPER" && body.positionId) {
-          const pos = await env.DB.prepare("SELECT * FROM paper_positions WHERE id = ?").bind(body.positionId).first<any>();
-          if (pos) {
-            mint = pos.mint;
-            quantity = pos.quantity;
-            buyPrice = pos.entry_price_usd;
-            invested = pos.entry_value_usd;
-            realizedPnl = pos.realized_pnl_usd || 0;
-            sellPrice = pos.exit_price_usd || buyPrice;
-            roiPct = invested > 0 ? (realizedPnl / invested) * 100 : 0;
+        // Verify authenticity against D1 records - never trust client metrics
+        if (tradeType === "PAPER") {
+          if (!body.positionId) {
+            throw new ApiError("Valid positionId required to generate authentic paper PnL card", 400);
           }
-        } else if (tradeType === "LIVE" && txSignature) {
+          const pos = await env.DB.prepare("SELECT * FROM paper_positions WHERE id = ?").bind(body.positionId).first<any>();
+          if (!pos) {
+            throw new ApiError("Paper position record not found in database", 404);
+          }
+          mint = pos.mint;
+          quantity = pos.quantity;
+          buyPrice = pos.entry_price_usd;
+          invested = pos.entry_value_usd;
+          realizedPnl = pos.realized_pnl_usd || 0;
+          sellPrice = pos.exit_price_usd || buyPrice;
+          roiPct = invested > 0 ? (realizedPnl / invested) * 100 : 0;
+        } else if (tradeType === "LIVE") {
+          if (!txSignature) {
+            throw new ApiError("Confirmed transaction signature required for live PnL card", 400);
+          }
           const liveTx = await env.DB.prepare("SELECT * FROM live_transactions WHERE signature = ?").bind(txSignature).first<any>();
-          if (liveTx) {
-            mint = liveTx.output_mint;
-            invested = liveTx.input_amount;
-            quantity = liveTx.output_amount;
-            if (liveTx.status !== "confirmed") {
-              throw new ApiError("Cannot generate realized live PnL card for unconfirmed transaction", 400);
-            }
+          if (!liveTx) {
+            throw new ApiError("Verified on-chain transaction record not found", 404);
+          }
+          if (liveTx.status !== "confirmed") {
+            throw new ApiError("Cannot generate realized live PnL card for unconfirmed transaction", 400);
+          }
+          mint = liveTx.output_mint;
+          invested = Number(liveTx.input_amount) || 0;
+          quantity = Number(liveTx.output_amount) || 0;
+          buyPrice = invested > 0 && quantity > 0 ? invested / quantity : 0;
+
+          // Reconcile exit transaction to compute verified realized profit without trusting client numbers
+          const exitTx = await env.DB.prepare(
+            "SELECT * FROM live_transactions WHERE input_mint = ? AND status = 'confirmed' AND created_at > ? ORDER BY created_at ASC LIMIT 1"
+          ).bind(mint, liveTx.created_at).first<any>();
+
+          if (exitTx) {
+            sellPrice = Number(exitTx.output_amount) / (Number(exitTx.input_amount) || 1);
+            const exitGross = Number(exitTx.output_amount);
+            realizedPnl = exitGross - invested;
+            roiPct = invested > 0 ? (realizedPnl / invested) * 100 : 0;
+          } else {
+            sellPrice = buyPrice;
+            realizedPnl = 0;
+            roiPct = 0;
           }
         }
+
+        const isPublic = body.isPublic === 1 || body.isPublic === true ? 1 : 0;
 
         await env.DB.prepare(
           `INSERT INTO pnl_cards (
              id, card_type, trade_type, mint, symbol, name, buy_price_usd, sell_price_usd,
              invested_usd, quantity, realized_pnl_usd, unrealized_pnl_usd, roi_pct, duration_seconds,
              tx_signature, is_public, created_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         ).bind(
           cardId,
           cardType,
@@ -1124,6 +1151,7 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
           Number(roiPct.toFixed(2)),
           Number(body.durationSeconds) || 0,
           txSignature,
+          isPublic,
           createdAt
         ).run();
 
@@ -1181,6 +1209,11 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
       const card = await env.DB.prepare("SELECT * FROM pnl_cards WHERE id = ?").bind(cardId).first<any>();
       if (!card) throw new ApiError("PnL Card not found", 404);
 
+      // Private cards must not be accessible through public endpoints
+      if (!card.is_public && !authenticateAdminRequest(request, env)) {
+        throw new ApiError("PnL Card is private and restricted to the authorized owner", 403);
+      }
+
       return json({
         ...card,
         portfolioSummary: card.portfolio_summary_json ? JSON.parse(card.portfolio_summary_json) : null,
@@ -1188,6 +1221,10 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
     }
 
     if (path === "/api/pnl/history" && method === "GET") {
+      // History is restricted to the authenticated owner
+      if (!authenticateAdminRequest(request, env)) {
+        throw new ApiError("Unauthorized to view card history", 401);
+      }
       const limit = Math.min(50, Math.max(1, Number(url.searchParams.get("limit")) || 20));
       const cards = await env.DB.prepare("SELECT * FROM pnl_cards ORDER BY created_at DESC LIMIT ?").bind(limit).all<any>();
       return json((cards.results || []).map(c => ({
