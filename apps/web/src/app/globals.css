@@ -292,3 +292,61 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   .header-actions .button { font-size: 11px; padding: 7px 9px; }
   .grid { grid-template-columns: 1fr; }
 }
+
+
+/* Page-level hierarchy */
+.page-intro {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 10px 2px 24px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid rgba(148,163,184,.12);
+}
+.page-intro-copy { max-width: 760px; }
+.page-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 12px;
+  color: #6f829d;
+  font: 700 10px/1.2 var(--font-mono);
+  letter-spacing: .16em;
+}
+.page-intro h1 {
+  margin: 0;
+  color: #f7fbff;
+  font-size: clamp(25px, 3vw, 38px);
+  line-height: 1.08;
+  letter-spacing: -.045em;
+  font-weight: 800;
+}
+.page-intro p {
+  margin: 10px 0 0;
+  max-width: 650px;
+  color: #91a2bb;
+  font-size: 13px;
+  line-height: 1.65;
+}
+.page-intro-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 230px;
+  padding: 12px 15px;
+  border: 1px solid rgba(0,243,255,.16);
+  border-radius: 13px;
+  background: linear-gradient(135deg, rgba(0,243,255,.07), rgba(138,43,226,.04));
+}
+.page-intro-status strong, .page-intro-status small { display:block; }
+.page-intro-status strong { color:#dce8f7; font-size:11px; }
+.page-intro-status small { margin-top:4px; color:#73859e; font-size:10px; }
+.status-pulse {
+  width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%;
+  background: var(--accent-amber); box-shadow: 0 0 12px rgba(255,176,32,.45);
+}
+@media(max-width:700px) {
+  .page-intro { align-items: stretch; flex-direction: column; gap: 14px; padding-bottom: 18px; }
+  .page-intro-status { min-width: 0; }
+}
