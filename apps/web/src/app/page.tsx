@@ -192,9 +192,10 @@ const parseList = (value?: string) => {
 // Client-side authentication token support (configured via localStorage or environment)
 function getStoredAuthSecret(): string {
   if (typeof window !== "undefined") {
-    return localStorage.getItem("radar_auth_secret") || process.env.NEXT_PUBLIC_RADAR_SECRET || "";
+    // Privileged credentials must never be compiled into the public browser bundle.
+    return localStorage.getItem("radar_auth_secret") || "";
   }
-  return process.env.NEXT_PUBLIC_RADAR_SECRET || "";
+  return "";
 }
 
 async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
@@ -843,6 +844,17 @@ export default function Home() {
         </header>
 
         <main className="content-body">
+          <section className="page-intro">
+            <div className="page-intro-copy">
+              <div className="page-eyebrow"><span className="radar-dot" /> SOLANA INTELLIGENCE TERMINAL</div>
+              <h1>{navSections.flatMap(group => group.items).find(item => item.id === tab)?.label || "Overview Feed"}</h1>
+              <p>Discover emerging launches, validate on-chain risk, follow wallet behaviour and manage your simulation from one command centre.</p>
+            </div>
+            <div className="page-intro-status">
+              <span className="status-pulse" />
+              <div><strong>{API ? "API endpoint configured" : "API connection required"}</strong><small>{API ? "Waiting for live service response" : "Connect the Cloudflare Worker to load live data"}</small></div>
+            </div>
+          </section>
           {/* Notices */}
           {error && (
             <div className="notice error">
