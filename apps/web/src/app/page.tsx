@@ -198,6 +198,9 @@ function getStoredAuthSecret(): string {
 }
 
 async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  if (!API) {
+    throw new Error("Radar API is not configured. Set NEXT_PUBLIC_RADAR_API_URL to the deployed Cloudflare Worker API URL, then rebuild the web app.");
+  }
   const url = `${API}${path}`;
   const secret = getStoredAuthSecret();
   const headers: Record<string, string> = {
@@ -217,8 +220,19 @@ async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
     credentials: "include",
     cache: "no-store",
   });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
+  const contentType = response.headers.get("content-type") || "";
+  const responseText = await response.text();
+  let data: any;
+  try {
+    data = responseText ? JSON.parse(responseText) : null;
+  } catch {
+    const preview = responseText.replace(/\\s+/g, " ").slice(0, 180);
+    if (contentType.includes("text/html") || /^<!doctype html|^<html/i.test(responseText.trim())) {
+      throw new Error(`Radar API returned an HTML page instead of JSON (HTTP ${response.status}). Check NEXT_PUBLIC_RADAR_API_URL and the Cloudflare Worker route. Response: ${preview}`);
+    }
+    throw new Error(`Radar API returned invalid JSON (HTTP ${response.status}). Response: ${preview}`);
+  }
+  if (!response.ok) throw new Error(data?.error || `Request failed (${response.status})`);
   return data as T;
 }
 
@@ -316,6 +330,10 @@ export default function Home() {
   const [envStatusData, setEnvStatusData] = useState<any>(null);
 
   const refresh = useCallback(async () => {
+    if (!API) {
+      setError("Radar API is not connected. The Vercel frontend needs NEXT_PUBLIC_RADAR_API_URL pointing to the deployed Cloudflare Worker API. No scan or live data requests can work until it is configured.");
+      return;
+    }
     try {
       const [o, t, a, n, p, f, pr, bks, bts] = await Promise.all([
         apiRequest<Overview>("/api/status").catch(() => null),
