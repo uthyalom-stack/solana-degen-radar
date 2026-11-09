@@ -32,7 +32,7 @@ export class PaperTradingEngine {
     const [positionsResult, tradesResult] = await Promise.all([
       db
         .prepare(
-          `SELECT p.*, t.symbol, t.name, s.price_usd
+          `SELECT p.*, t.symbol, t.name, s.price_usd, s.observed_at as price_observed_at
            FROM paper_positions p
            JOIN tokens t ON t.mint = p.mint
            LEFT JOIN token_snapshots s ON s.id = (
@@ -58,9 +58,11 @@ export class PaperTradingEngine {
     const positions: PaperPosition[] = [];
     let unrealizedPnlUsd = 0;
     let openPositionsValue = 0;
+    const nowMs = Date.now();
 
     for (const p of positionsResult.results || []) {
       const currentPrice = Number(p.price_usd) || p.entry_price_usd;
+      const isPriceStale = Boolean(p.price_observed_at && (nowMs - Date.parse(p.price_observed_at) > 30 * 60 * 1000));
       const currentValue = p.status === "open" ? p.quantity * currentPrice : 0;
       const unrealizedPnl = p.status === "open" ? currentValue - p.entry_value_usd : 0;
       const unrealizedPnlPct = p.status === "open" && p.entry_value_usd > 0
@@ -75,6 +77,7 @@ export class PaperTradingEngine {
       positions.push({
         id: p.id,
         portfolio_id: p.portfolio_id,
+        session_id: p.session_id || sessionId,
         mint: p.mint,
         symbol: p.symbol || "UNKNOWN",
         name: p.name || "Unknown Token",
@@ -90,6 +93,8 @@ export class PaperTradingEngine {
         current_price_usd: currentPrice,
         unrealized_pnl_usd: unrealizedPnl,
         unrealized_pnl_pct: Number(unrealizedPnlPct.toFixed(2)),
+        price_updated_at: p.price_observed_at || p.opened_at,
+        is_stale_price: isPriceStale,
       });
     }
 

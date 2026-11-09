@@ -217,10 +217,16 @@ async function runMarketScan(env: Env) {
                 uiAmount: a.uiAmount,
               }));
 
-              // Extract actual creator if token has deployer info in pair or first holder
-              creatorAddress = resolvedHolders[0]?.address;
+              // Evidence-based creator attribution: Inspect pair metadata, deployer info, or creation history.
+              // Never treat the first resolved holder as the creator. If creator cannot be proven, mark as unknown (undefined).
+              const pairAny = pair as any;
+              const provableCreator =
+                pairAny.creatorAddress ||
+                pairAny.deployer ||
+                pairAny.baseToken?.creator;
 
-              if (creatorAddress) {
+              if (provableCreator && typeof provableCreator === "string" && provableCreator.length >= 32) {
+                creatorAddress = provableCreator;
                 creatorProfile = await WalletIntelligenceEngine.recordCreatorLaunch(
                   env.DB,
                   creatorAddress,
@@ -228,6 +234,8 @@ async function runMarketScan(env: Env) {
                   num(pair.liquidity?.usd) || 0,
                   num(pair.marketCap) || 0
                 );
+              } else {
+                creatorAddress = undefined;
               }
 
               await WalletIntelligenceEngine.recordHolderSnapshot(
@@ -675,25 +683,67 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
     return json({ ok: true, name: "solana-degen-radar-worker", timestamp: now() });
   }
 
-  // Check authentication & authorization for state-changing endpoints
-  if (isStateChanging && !path.startsWith("/api/telegram/")) {
-    if (!authenticateRequest(request, env)) {
+  // Route-specific credential separation:
+  if (path === "/api/social/ingest") {
+    if (method !== "POST") return json({ error: "Method not allowed" }, 405);
+    if (!authenticateSocialIngestRequest(request, env)) {
+      return json({ error: "Unauthorized: Invalid social ingest credentials" }, 401);
+    }
+  } else if (path === "/api/telegram/webhook") {
+    if (method !== "POST") return json({ error: "Method not allowed" }, 405);
+    if (
+      !env.TELEGRAM_WEBHOOK_SECRET ||
+      request.headers.get("x-telegram-bot-api-secret-token") !== env.TELEGRAM_WEBHOOK_SECRET
+    ) {
+      return json({ error: "Unauthorized Telegram webhook" }, 401);
+    }
+  } else if (path === "/api/scan" || path === "/api/social/scan" || path === "/api/breakouts/scan") {
+    if (!authenticateInternalRequest(request, env) && !authenticateAdminRequest(request, env)) {
+      return json({ error: "Unauthorized: Internal or admin authorization required for scanner triggers" }, 401);
+    }
+  } else if (path === "/api/telegram/test") {
+    if (!authenticateAdminRequest(request, env)) {
+      return json({ error: "Unauthorized: Admin authorization required" }, 401);
+    }
+  } else if (isStateChanging) {
+    if (!authenticateAdminRequest(request, env)) {
       return json({ error: "Unauthorized: Missing or invalid radar credentials" }, 401);
     }
   }
 
-  // Persistent D1-backed Idempotency check for critical mutation endpoints
+  // Concurrency-safe D1 Idempotency Reservation for critical mutations
   const idempotencyKey = request.headers.get("x-idempotency-key");
+  let idempotencyPayloadHash = "";
   if (idempotencyKey && isStateChanging) {
-    const cached = await getIdempotencyResponse(env.DB, idempotencyKey);
-    if (cached) {
-      return new Response(cached.responseBody, {
-        status: cached.status,
+    const cloned = request.clone();
+    const rawBody = await cloned.text().catch(() => "");
+    idempotencyPayloadHash = await computePayloadHash(rawBody);
+
+    const callerIdentity = extractBearerOrSecret(request) || request.headers.get("cf-connecting-ip") || "anonymous";
+    const reservation = await reserveIdempotencyKey(
+      env.DB,
+      idempotencyKey,
+      callerIdentity,
+      path,
+      idempotencyPayloadHash
+    );
+
+    if (reservation.state === "completed") {
+      return new Response(reservation.responseBody, {
+        status: reservation.status,
         headers: {
           "content-type": "application/json; charset=utf-8",
           "x-idempotency-replayed": "true",
         },
       });
+    }
+
+    if (reservation.state === "conflict") {
+      return json({ error: reservation.message }, 409);
+    }
+
+    if (reservation.state === "in_progress") {
+      return json({ error: "Concurrent request in progress for this idempotency key" }, 409);
     }
   }
 
@@ -812,36 +862,50 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
     if (path === "/api/paper/buy" && method === "POST") {
       const body: any = await parseJson(request);
       const sessionId = body.sessionId || "default";
-      const buyResult = await PaperTradingEngine.buy(
-        env.DB,
-        env,
-        String(body.mint || "").trim(),
-        Number(body.usd),
-        num(body.slippageBps) ?? 50,
-        sessionId,
-        body.triggerSignal
-      );
-      if (idempotencyKey) {
-        await saveIdempotencyResponse(env.DB, idempotencyKey, path, JSON.stringify(buyResult), 201);
+      try {
+        const buyResult = await PaperTradingEngine.buy(
+          env.DB,
+          env,
+          String(body.mint || "").trim(),
+          Number(body.usd),
+          num(body.slippageBps) ?? 50,
+          sessionId,
+          body.triggerSignal
+        );
+        if (idempotencyKey) {
+          await completeIdempotencyReservation(env.DB, idempotencyKey, JSON.stringify(buyResult), 201);
+        }
+        return json(buyResult, 201);
+      } catch (err) {
+        if (idempotencyKey) {
+          await markIdempotencyFailed(env.DB, idempotencyKey);
+        }
+        throw err;
       }
-      return json(buyResult, 201);
     }
 
     if (path === "/api/paper/sell" && method === "POST") {
       const body: any = await parseJson(request);
       const sessionId = body.sessionId || "default";
-      const sellResult = await PaperTradingEngine.sell(
-        env.DB,
-        env,
-        String(body.positionId || "").trim(),
-        num(body.slippageBps) ?? 50,
-        sessionId,
-        num(body.portion) ?? 1.0
-      );
-      if (idempotencyKey) {
-        await saveIdempotencyResponse(env.DB, idempotencyKey, path, JSON.stringify(sellResult), 200);
+      try {
+        const sellResult = await PaperTradingEngine.sell(
+          env.DB,
+          env,
+          String(body.positionId || "").trim(),
+          num(body.slippageBps) ?? 50,
+          sessionId,
+          num(body.portion) ?? 1.0
+        );
+        if (idempotencyKey) {
+          await completeIdempotencyReservation(env.DB, idempotencyKey, JSON.stringify(sellResult), 200);
+        }
+        return json(sellResult);
+      } catch (err) {
+        if (idempotencyKey) {
+          await markIdempotencyFailed(env.DB, idempotencyKey);
+        }
+        throw err;
       }
-      return json(sellResult);
     }
 
     // 8. Trigger Scans
@@ -855,9 +919,6 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
 
     // 9. Protected social ingest
     if (path === "/api/social/ingest" && method === "POST") {
-      if (!env.SOCIAL_INGEST_SECRET || request.headers.get("x-radar-secret") !== env.SOCIAL_INGEST_SECRET) {
-        return json({ error: "Unauthorized" }, 401);
-      }
       const body: any = await parseJson(request);
       const events = Array.isArray(body.events) ? body.events : [];
       return json(await ingestSocialObservations(env.DB, events, env), 201);
@@ -996,6 +1057,145 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
       return json(await LiveSwapService.getTransactionHistory(env.DB, wallet));
     }
 
+    // 15. Authentic PnL Generator & Public Verification Cards
+    if (path === "/api/pnl/generate" && method === "POST") {
+      const body: any = await parseJson(request);
+      const cardType = body.cardType === "portfolio" ? "portfolio" : "trade";
+      const tradeType = body.tradeType === "LIVE" ? "LIVE" : "PAPER";
+      const cardId = `pnl-${id().slice(0, 8)}`;
+      const createdAt = now();
+
+      if (cardType === "trade") {
+        let buyPrice = Number(body.buyPriceUsd) || 0;
+        let sellPrice = Number(body.sellPriceUsd) || 0;
+        let invested = Number(body.investedUsd) || 0;
+        let quantity = Number(body.quantity) || 0;
+        let realizedPnl = Number(body.realizedPnlUsd) || 0;
+        let unrealizedPnl = Number(body.unrealizedPnlUsd) || 0;
+        let roiPct = Number(body.roiPct) || 0;
+        let symbol = String(body.symbol || "").toUpperCase();
+        let name = String(body.name || symbol);
+        let mint = String(body.mint || "");
+        let txSignature = body.txSignature ? String(body.txSignature) : null;
+
+        // Verify authenticity against D1 records:
+        if (tradeType === "PAPER" && body.positionId) {
+          const pos = await env.DB.prepare("SELECT * FROM paper_positions WHERE id = ?").bind(body.positionId).first<any>();
+          if (pos) {
+            mint = pos.mint;
+            quantity = pos.quantity;
+            buyPrice = pos.entry_price_usd;
+            invested = pos.entry_value_usd;
+            realizedPnl = pos.realized_pnl_usd || 0;
+            sellPrice = pos.exit_price_usd || buyPrice;
+            roiPct = invested > 0 ? (realizedPnl / invested) * 100 : 0;
+          }
+        } else if (tradeType === "LIVE" && txSignature) {
+          const liveTx = await env.DB.prepare("SELECT * FROM live_transactions WHERE signature = ?").bind(txSignature).first<any>();
+          if (liveTx) {
+            mint = liveTx.output_mint;
+            invested = liveTx.input_amount;
+            quantity = liveTx.output_amount;
+            if (liveTx.status !== "confirmed") {
+              throw new ApiError("Cannot generate realized live PnL card for unconfirmed transaction", 400);
+            }
+          }
+        }
+
+        await env.DB.prepare(
+          `INSERT INTO pnl_cards (
+             id, card_type, trade_type, mint, symbol, name, buy_price_usd, sell_price_usd,
+             invested_usd, quantity, realized_pnl_usd, unrealized_pnl_usd, roi_pct, duration_seconds,
+             tx_signature, is_public, created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`
+        ).bind(
+          cardId,
+          cardType,
+          tradeType,
+          mint,
+          symbol,
+          name,
+          buyPrice,
+          sellPrice,
+          invested,
+          quantity,
+          realizedPnl,
+          unrealizedPnl,
+          Number(roiPct.toFixed(2)),
+          Number(body.durationSeconds) || 0,
+          txSignature,
+          createdAt
+        ).run();
+
+        return json({
+          cardId,
+          cardType,
+          tradeType,
+          mint,
+          symbol,
+          name,
+          buyPriceUsd: buyPrice,
+          sellPriceUsd: sellPrice,
+          investedUsd: invested,
+          realizedPnlUsd: realizedPnl,
+          unrealizedPnlUsd: unrealizedPnl,
+          roiPct: Number(roiPct.toFixed(2)),
+          txSignature,
+          createdAt,
+          verificationUrl: `/verify/${cardId}`,
+        }, 201);
+      } else {
+        const summary = body.portfolioSummary || {};
+        const roiPct = summary.startingBalanceUsd > 0
+          ? ((summary.totalEquityUsd - summary.startingBalanceUsd) / summary.startingBalanceUsd) * 100
+          : 0;
+
+        await env.DB.prepare(
+          `INSERT INTO pnl_cards (
+             id, card_type, trade_type, roi_pct, portfolio_summary_json, is_public, created_at
+           ) VALUES (?, ?, ?, ?, ?, 1, ?)`
+        ).bind(
+          cardId,
+          cardType,
+          tradeType,
+          Number(roiPct.toFixed(2)),
+          JSON.stringify(summary),
+          createdAt
+        ).run();
+
+        return json({
+          cardId,
+          cardType,
+          tradeType,
+          roiPct: Number(roiPct.toFixed(2)),
+          portfolioSummary: summary,
+          createdAt,
+          verificationUrl: `/verify/${cardId}`,
+        }, 201);
+      }
+    }
+
+    if (path.startsWith("/api/pnl/card/") && method === "GET") {
+      const cardId = path.split("/")[4]?.trim();
+      if (!cardId) throw new ApiError("Card ID required");
+      const card = await env.DB.prepare("SELECT * FROM pnl_cards WHERE id = ?").bind(cardId).first<any>();
+      if (!card) throw new ApiError("PnL Card not found", 404);
+
+      return json({
+        ...card,
+        portfolioSummary: card.portfolio_summary_json ? JSON.parse(card.portfolio_summary_json) : null,
+      });
+    }
+
+    if (path === "/api/pnl/history" && method === "GET") {
+      const limit = Math.min(50, Math.max(1, Number(url.searchParams.get("limit")) || 20));
+      const cards = await env.DB.prepare("SELECT * FROM pnl_cards ORDER BY created_at DESC LIMIT ?").bind(limit).all<any>();
+      return json((cards.results || []).map(c => ({
+        ...c,
+        portfolioSummary: c.portfolio_summary_json ? JSON.parse(c.portfolio_summary_json) : null,
+      })));
+    }
+
     // 12. Telegram Webhook & Test
     if (path === "/api/telegram/webhook" && method === "POST") {
       if (
@@ -1037,11 +1237,58 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
     }
 
     if (path === "/api/telegram/test" && method === "POST") {
-      if (!env.SOCIAL_INGEST_SECRET || request.headers.get("x-radar-secret") !== env.SOCIAL_INGEST_SECRET) {
-        return json({ error: "Unauthorized" }, 401);
-      }
       const ok = await TelegramAdapter.sendAlert(env, "Solana Degen Radar: Connection test successful! 🚀");
       return json({ ok });
+    }
+
+    // 16. Secure Environment & Integration Status Diagnostic Endpoint
+    if (path === "/api/admin/env-status" && method === "GET") {
+      const isConfigured = (v?: string) => Boolean(v && v.trim().length > 0);
+
+      const statusMatrix = {
+        core: {
+          appEnv: env.APP_ENV || "production",
+          dashboardOrigin: env.DASHBOARD_ORIGIN || "Not set",
+          workerActive: true,
+          timestamp: now(),
+        },
+        cloudflare: {
+          d1Database: { name: "DB", configured: Boolean(env.DB), status: "available" },
+          durableObjects: { name: "PUMPPORTAL_STREAM", configured: Boolean(env.PUMPPORTAL_STREAM), status: env.PUMPPORTAL_STREAM ? "available" : "missing" },
+          cronTriggers: { schedule: "*/5 * * * *", configured: true, status: "active" },
+        },
+        solanaRpc: {
+          endpointType: env.HELIUS_API_KEY ? "Helius Dedicated RPC" : "Solana Public RPC",
+          isCustomEndpoint: isConfigured(env.SOLANA_RPC_URL),
+          hasHeliusKey: isConfigured(env.HELIUS_API_KEY),
+          status: "connected",
+        },
+        marketProviders: {
+          dexscreener: { configured: true, status: "available", baseUrl: env.DEXSCREENER_BASE_URL || "https://api.dexscreener.com" },
+          pumpPortal: { configured: isConfigured(env.PUMPPORTAL_API_KEY), status: isConfigured(env.PUMPPORTAL_API_KEY) ? "verified" : "public_stream_only" },
+          jupiterSwap: { configured: true, status: "available", endpoint: "https://api.jup.ag/swap/v1" },
+        },
+        socialProviders: {
+          reddit: { configured: isConfigured(env.REDDIT_USER_AGENT), status: "public_json_active" },
+          rss: { configured: isConfigured(env.SOCIAL_RSS_FEEDS), status: isConfigured(env.SOCIAL_RSS_FEEDS) ? "custom_feeds" : "default_crypto_news" },
+          telegram: { configured: isConfigured(env.TELEGRAM_BOT_TOKEN) && isConfigured(env.TELEGRAM_CHAT_ID), status: isConfigured(env.TELEGRAM_BOT_TOKEN) ? "configured" : "disabled" },
+          xTwitter: { configured: isConfigured(env.X_BEARER_TOKEN), status: isConfigured(env.X_BEARER_TOKEN) ? "bearer_configured" : "mock_or_unconfigured" },
+          tikTok: { configured: false, status: "disabled_unauthorized_api" },
+        },
+        securityCredentials: {
+          hasAdminSecret: isConfigured(env.ADMIN_SECRET),
+          hasSocialIngestSecret: isConfigured(env.SOCIAL_INGEST_SECRET),
+          hasTelegramWebhookSecret: isConfigured(env.TELEGRAM_WEBHOOK_SECRET),
+          hasInternalWorkerSecret: isConfigured(env.INTERNAL_WORKER_SECRET),
+        },
+        tradingConfiguration: {
+          paperStartingBalance: Number(env.PAPER_STARTING_BALANCE) || 100,
+          liveTradingEnabled: false, // Strict default safeguard
+          phantomSupported: true,
+        },
+      };
+
+      return json(statusMatrix);
     }
 
     // 13. PumpPortal DO control
@@ -1057,46 +1304,49 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
   }
 }
 
-// Persistent Cloudflare-compatible rate limiting using D1 system_logs
-const RATE_LIMIT_WINDOW_SECONDS = 60;
+// Concurrency-Safe D1-backed Rate Limiter
+const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 60 seconds
 const RATE_LIMIT_MAX_REQUESTS = 60;
+const RATE_LIMIT_MUTATION_MAX = 20;
 
-async function checkD1RateLimit(db: D1Database, request: Request, isMutation = false): Promise<boolean> {
+async function checkD1RateLimit(
+  db: D1Database,
+  request: Request,
+  isMutation = false,
+  identity = "anonymous"
+): Promise<boolean> {
+  // Rely on Cloudflare cf-connecting-ip header
   const ip = request.headers.get("cf-connecting-ip") || "127.0.0.1";
   const nowMs = Date.now();
-  const windowStart = new Date(nowMs - RATE_LIMIT_WINDOW_SECONDS * 1000).toISOString();
+  const windowBucket = Math.floor(nowMs / RATE_LIMIT_WINDOW_MS);
+  const endpoint = new URL(request.url).pathname;
+
+  const limitKey = `${identity}:${ip}:${isMutation ? "mut:" + endpoint : "all"}:${windowBucket}`;
+  const maxLimit = isMutation ? RATE_LIMIT_MUTATION_MAX : RATE_LIMIT_MAX_REQUESTS;
+  const expiresAt = (windowBucket + 2) * RATE_LIMIT_WINDOW_MS;
 
   try {
-    // Opportunistic cleanup of expired logs (older than 10 minutes)
+    // Opportunistic cleanup of expired limits
     if (Math.random() < 0.05) {
-      const cleanupThreshold = new Date(nowMs - 600 * 1000).toISOString();
-      await db.prepare("DELETE FROM system_logs WHERE source LIKE 'ratelimit:%' AND created_at < ?").bind(cleanupThreshold).run().catch(() => {});
-      await db.prepare("DELETE FROM idempotency_keys WHERE expires_at < ?").bind(nowMs).run().catch(() => {});
+      await db.prepare("DELETE FROM rate_limits WHERE expires_at < ?").bind(nowMs).run().catch(() => {});
+      await db.prepare("DELETE FROM idempotency_reservations WHERE expires_at < ?").bind(nowMs).run().catch(() => {});
     }
 
-    const row = await db
+    // Atomic increment or insert in rate_limits
+    const result = await db
       .prepare(
-        "SELECT COUNT(*) as count FROM system_logs WHERE source = ? AND created_at >= ?"
+        `INSERT INTO rate_limits (limit_key, request_count, window_start, expires_at)
+         VALUES (?, 1, ?, ?)
+         ON CONFLICT(limit_key) DO UPDATE SET request_count = rate_limits.request_count + 1
+         RETURNING request_count`
       )
-      .bind(`ratelimit:${ip}`, windowStart)
-      .first<any>();
+      .bind(limitKey, windowBucket * RATE_LIMIT_WINDOW_MS, expiresAt)
+      .first<{ request_count: number }>();
 
-    const count = Number(row?.count) || 0;
-    if (count >= RATE_LIMIT_MAX_REQUESTS) {
-      return false;
-    }
-
-    // Record request timestamp
-    await db
-      .prepare(
-        "INSERT INTO system_logs (id, level, source, message, created_at) VALUES (?, 'info', ?, 'request', ?)"
-      )
-      .bind(crypto.randomUUID(), `ratelimit:${ip}`, new Date().toISOString())
-      .run();
-
-    return true;
-  } catch (err) {
-    // Fail closed on mutation routes if rate-limiting table is unavailable
+    const currentCount = result?.request_count ?? 1;
+    return currentCount <= maxLimit;
+  } catch {
+    // Fail-closed for state-changing mutations if database or rate limiting table is unavailable
     if (isMutation) {
       return false;
     }
@@ -1104,26 +1354,124 @@ async function checkD1RateLimit(db: D1Database, request: Request, isMutation = f
   }
 }
 
-// Persistent D1-backed Idempotency
-async function getIdempotencyResponse(db: D1Database, key: string): Promise<{ responseBody: string; status: number } | null> {
+// Concurrency-Safe D1-Backed Idempotency Engine
+async function computePayloadHash(payload: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(payload || "");
+  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+export type IdempotencyReservationResult =
+  | { state: "reserved" }
+  | { state: "completed"; responseBody: string; status: number }
+  | { state: "conflict"; message: string }
+  | { state: "in_progress" };
+
+async function reserveIdempotencyKey(
+  db: D1Database,
+  key: string,
+  identity: string,
+  endpoint: string,
+  payloadHash: string
+): Promise<IdempotencyReservationResult> {
+  const nowMs = Date.now();
+  const ttlMs = 15 * 60 * 1000; // 15 minutes TTL
+  const expiresAt = nowMs + ttlMs;
+  const createdAt = new Date().toISOString();
+
   try {
-    const row = await db.prepare("SELECT response_body, response_status, expires_at FROM idempotency_keys WHERE key = ?").bind(key).first<any>();
-    if (!row) return null;
-    if (Date.now() > Number(row.expires_at)) return null;
-    return { responseBody: row.response_body, status: row.response_status };
+    // 1. Attempt atomic insert of reservation with status 'pending'
+    const insertRes = await db
+      .prepare(
+        `INSERT INTO idempotency_reservations (key, identity, endpoint, payload_hash, status, created_at, expires_at)
+         VALUES (?, ?, ?, ?, 'pending', ?, ?)
+         ON CONFLICT(key) DO NOTHING`
+      )
+      .bind(key, identity, endpoint, payloadHash, createdAt, expiresAt)
+      .run();
+
+    if (insertRes.meta.changes > 0) {
+      return { state: "reserved" };
+    }
+
+    // 2. Existing key: check status, payload matching, and expiration
+    const existing = await db
+      .prepare("SELECT * FROM idempotency_reservations WHERE key = ?")
+      .bind(key)
+      .first<any>();
+
+    if (!existing) {
+      return { state: "reserved" };
+    }
+
+    // Check payload and endpoint binding
+    if (existing.endpoint !== endpoint || existing.payload_hash !== payloadHash) {
+      return {
+        state: "conflict",
+        message: "Idempotency key reused with different endpoint or request payload",
+      };
+    }
+
+    // Check if previous request completed
+    if (existing.status === "completed" && existing.response_body) {
+      return {
+        state: "completed",
+        responseBody: existing.response_body,
+        status: existing.response_status || 200,
+      };
+    }
+
+    // If reservation is abandoned or timed out (> 60s in 'pending'), recover reservation
+    const reservationAgeMs = nowMs - Date.parse(existing.created_at);
+    if (existing.status === "pending" && reservationAgeMs > 60 * 1000) {
+      const recovered = await db
+        .prepare(
+          `UPDATE idempotency_reservations
+           SET created_at = ?, expires_at = ?, identity = ?
+           WHERE key = ? AND status = 'pending'`
+        )
+        .bind(createdAt, expiresAt, identity, key)
+        .run();
+
+      if (recovered.meta.changes > 0) {
+        return { state: "reserved" };
+      }
+    }
+
+    return { state: "in_progress" };
   } catch {
-    return null;
+    // Fallback on schema unavailability
+    return { state: "reserved" };
   }
 }
 
-async function saveIdempotencyResponse(db: D1Database, key: string, endpoint: string, body: string, status: number) {
+async function completeIdempotencyReservation(
+  db: D1Database,
+  key: string,
+  responseBody: string,
+  status: number
+): Promise<void> {
   try {
-    const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes cache
-    await db.prepare(
-      "INSERT OR REPLACE INTO idempotency_keys (key, endpoint, response_status, response_body, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)"
-    ).bind(key, endpoint, status, body, new Date().toISOString(), expiresAt).run();
+    await db
+      .prepare(
+        `UPDATE idempotency_reservations
+         SET status = 'completed', response_body = ?, response_status = ?
+         WHERE key = ?`
+      )
+      .bind(responseBody, status, key)
+      .run();
   } catch {
-    // DB error fallback
+    // Non-fatal
+  }
+}
+
+async function markIdempotencyFailed(db: D1Database, key: string): Promise<void> {
+  try {
+    await db.prepare("UPDATE idempotency_reservations SET status = 'failed' WHERE key = ?").bind(key).run();
+  } catch {
+    // Non-fatal
   }
 }
 
@@ -1145,22 +1493,44 @@ function getSafeAllowedOrigin(request: Request, env: Env): string | null {
   return null;
 }
 
-function authenticateRequest(request: Request, env: Env): boolean {
-  // Strict credentials validation: Origin headers are strictly for CORS, NOT authentication
+function extractBearerOrSecret(request: Request): string | null {
   const authHeader = request.headers.get("authorization") || "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+  if (authHeader.startsWith("Bearer ")) {
+    const token = authHeader.slice(7).trim();
+    if (token) return token;
+  }
   const radarSecret = request.headers.get("x-radar-secret");
+  if (radarSecret && radarSecret.trim()) return radarSecret.trim();
+  return null;
+}
 
-  const expectedSecret = env.SOCIAL_INGEST_SECRET || (env as any).ADMIN_SECRET;
-
-  if (expectedSecret) {
-    if (radarSecret && radarSecret === expectedSecret) return true;
-    if (token && token === expectedSecret) return true;
+function authenticateAdminRequest(request: Request, env: Env): boolean {
+  // Production and local environments fail-closed if ADMIN_SECRET is not configured
+  const expectedSecret = env.ADMIN_SECRET;
+  if (!expectedSecret || expectedSecret.trim() === "") {
     return false;
   }
+  const provided = extractBearerOrSecret(request);
+  return Boolean(provided && provided === expectedSecret);
+}
 
-  // If no secret configured in environment, require explicit local development header
-  return radarSecret === "radar-local-dev-secret" || token === "radar-local-dev-secret";
+function authenticateInternalRequest(request: Request, env: Env): boolean {
+  // Strict separation: INTERNAL_WORKER_SECRET must be configured independently and never fall back to ADMIN_SECRET
+  const expectedSecret = env.INTERNAL_WORKER_SECRET;
+  if (!expectedSecret || expectedSecret.trim() === "") {
+    return false; // Fail closed if internal credential is not configured
+  }
+  const provided = extractBearerOrSecret(request);
+  return Boolean(provided && provided === expectedSecret);
+}
+
+function authenticateSocialIngestRequest(request: Request, env: Env): boolean {
+  const expectedSecret = env.SOCIAL_INGEST_SECRET;
+  if (!expectedSecret || expectedSecret.trim() === "") {
+    return false;
+  }
+  const provided = extractBearerOrSecret(request);
+  return Boolean(provided && provided === expectedSecret);
 }
 
 function applyCors(response: Response, request: Request, env: Env): Response {

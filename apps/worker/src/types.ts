@@ -9,6 +9,8 @@ export interface Env {
   TELEGRAM_WEBHOOK_SECRET?: string;
   TELEGRAM_ALLOWED_CHANNELS?: string;
   DEXSCREENER_BASE_URL?: string;
+  ADMIN_SECRET?: string;
+  INTERNAL_WORKER_SECRET?: string;
   SOCIAL_INGEST_SECRET?: string;
   SOCIAL_RSS_FEEDS?: string;
   SOLANA_RPC_URL?: string;

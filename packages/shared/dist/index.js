@@ -1,3 +1,16 @@
+export function calculateTradePnlMetrics(params) {
+    const fees = params.feesUsd ?? 0;
+    const grossValue = params.quantity * params.sellOrCurrentPrice;
+    const netValue = grossValue - fees;
+    const pnl = netValue - params.investedUsd;
+    const roiPct = params.investedUsd > 0 ? (pnl / params.investedUsd) * 100 : 0;
+    return {
+        realizedPnlUsd: params.isClosed ? Number(pnl.toFixed(4)) : 0,
+        unrealizedPnlUsd: !params.isClosed ? Number(pnl.toFixed(4)) : 0,
+        roiPct: Number(roiPct.toFixed(2)),
+        currentValueUsd: Number(grossValue.toFixed(4)),
+    };
+}
 // ==========================================
 // 5. DETERMINISTIC SCORING & HEURISTICS
 // ==========================================
@@ -187,17 +200,25 @@ export function assessTokenRisk(mint, evidence, assessedAt = new Date().toISOStr
         score += 25;
         flags.push("Token-2022 transfer hook extension detected (can restrict transfers or freeze tokens)");
     }
-    // Honeypot & Sellability Verification
-    if (evidence.sellabilityStatus === "honeypot" || evidence.isSellable === false) {
+    // Honeypot & Sellability Nuanced Verification
+    if (evidence.sellabilityStatus === "confirmed_honeypot" || evidence.sellabilityStatus === "honeypot") {
         score = 99; // Honeypot override
-        flags.push("CRITICAL HONEYPOT: Swap simulation/quote confirms token cannot be sold");
+        flags.push("CRITICAL HONEYPOT: Swap simulation confirms token transfer restriction or sell block");
     }
-    else if (evidence.sellabilityStatus === "verified_sellable") {
+    else if (evidence.sellabilityStatus === "verified_sellable" || evidence.isSellable === true) {
         score -= 10;
         passes.push("Verified sellable via Jupiter quote/swap simulation");
     }
+    else if (evidence.sellabilityStatus === "insufficient_liquidity") {
+        score += 15;
+        flags.push("Sell test warning: Insufficient market liquidity for sell route");
+    }
+    else if (evidence.sellabilityStatus === "no_route") {
+        score += 15;
+        flags.push("Sell test warning: No available DEX route to SOL");
+    }
     else {
-        unknowns.push("Sellability not verified via swap simulation");
+        unknowns.push("Sellability unverified via swap simulation");
     }
     // 7. Top 10 Holder Concentration (excluding known pools/burns)
     const top10 = evidence.top10HolderPercent;
@@ -322,6 +343,126 @@ export function detectBreakoutSignals(input) {
         });
     }
     return signals;
+}
+export function evaluateTradeViability(momentumScore, riskAssessment) {
+    const reasons = [];
+    let disqualified = false;
+    // Severe risk disqualifications
+    if (riskAssessment.score >= 80) {
+        disqualified = true;
+        reasons.push("Critical risk score (>=80)");
+    }
+    if (riskAssessment.evidence.sellabilityStatus === "confirmed_honeypot" || riskAssessment.evidence.sellabilityStatus === "honeypot") {
+        disqualified = true;
+        reasons.push("Confirmed honeypot / sell restriction");
+    }
+    if (riskAssessment.evidence.hasTransferHook) {
+        disqualified = true;
+        reasons.push("Dangerous Token-2022 transfer hook detected");
+    }
+    if (disqualified) {
+        return {
+            mint: riskAssessment.mint,
+            viabilityScore: 0,
+            recommendation: "Disqualified",
+            reasons,
+            disqualified: true,
+        };
+    }
+    // Viability calculation: high momentum rewards, high risk penalizes
+    const riskPenalty = riskAssessment.score * 0.5;
+    const viability = Math.round(clamp(momentumScore * 0.7 + (100 - riskAssessment.score) * 0.3 - (riskPenalty > 30 ? 15 : 0)));
+    let recommendation = "Moderate opportunity";
+    if (viability >= 70 && riskAssessment.score < 45) {
+        recommendation = "Strong candidate";
+        reasons.push("High momentum combined with low contract and liquidity risk");
+    }
+    else if (riskAssessment.score >= 60) {
+        recommendation = "High risk / Caution";
+        reasons.push("Elevated risk factors dampen trade viability despite potential momentum");
+    }
+    else {
+        recommendation = "Moderate opportunity";
+        reasons.push("Balanced profile; monitor volume continuation");
+    }
+    return {
+        mint: riskAssessment.mint,
+        viabilityScore: viability,
+        recommendation,
+        reasons,
+        disqualified: false,
+    };
+}
+export function estimateTokenSurvival(mint, evidence, momentumScore, riskScore) {
+    const factors = [];
+    // Baseline survival decays over time for meme coins:
+    let p5m = 95;
+    let p15m = 85;
+    let p1h = 65;
+    let p6h = 40;
+    let p24h = 20;
+    // Severe risk factors drop survival precipitously
+    if (evidence.sellabilityStatus === "confirmed_honeypot" || evidence.sellabilityStatus === "honeypot" || evidence.hasTransferHook) {
+        p5m = 10;
+        p15m = 5;
+        p1h = 1;
+        p6h = 0;
+        p24h = 0;
+        factors.push("Severe honeypot or transfer hook drastically limits survival");
+    }
+    else {
+        // Liquidity stability
+        const liq = evidence.liquidityUsd ?? 0;
+        if (liq >= 50000) {
+            p1h += 15;
+            p6h += 20;
+            p24h += 25;
+            factors.push("Substantial liquidity pool supports longevity");
+        }
+        else if (liq < 5000) {
+            p1h -= 25;
+            p6h -= 25;
+            p24h -= 15;
+            factors.push("Very shallow liquidity (<$5k) threatens immediate collapse");
+        }
+        // LP burned
+        if ((evidence.lpBurnedPercent ?? 0) >= 99) {
+            p6h += 10;
+            p24h += 15;
+            factors.push("LP tokens burned removes rug pull liquidity removal risk");
+        }
+        else if ((evidence.lpBurnedPercent ?? 0) < 50) {
+            p1h -= 10;
+            p6h -= 15;
+            factors.push("Unburned/unlocked LP increases rug vulnerability");
+        }
+        // Top holder concentration
+        if ((evidence.top10HolderPercent ?? 0) > 70) {
+            p1h -= 15;
+            p6h -= 20;
+            p24h -= 15;
+            factors.push("Extreme whale concentration poses sudden dump risk");
+        }
+        // High momentum support
+        if (momentumScore >= 70 && riskScore < 50) {
+            p15m += 5;
+            p1h += 10;
+            factors.push("Strong organic momentum cushions short-term pullback");
+        }
+    }
+    return {
+        mint,
+        estimatedAt: new Date().toISOString(),
+        horizonProbabilities: {
+            "5m": Math.round(clamp(p5m, 1, 99)),
+            "15m": Math.round(clamp(p15m, 1, 98)),
+            "1h": Math.round(clamp(p1h, 1, 95)),
+            "6h": Math.round(clamp(p6h, 1, 90)),
+            "24h": Math.round(clamp(p24h, 1, 85)),
+        },
+        primaryFactors: factors,
+        limitationsNotice: "Survival model estimates are statistical approximations based on historical Solana meme coin lifecycle observations. They do not constitute financial guarantees.",
+    };
 }
 /** Execute a deterministic historical backtest simulation */
 export function runBacktestSimulation(snapshots, config) {
