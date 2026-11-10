@@ -777,15 +777,11 @@ export default function Home() {
         <header className="top-header">
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <button
-              className="button outline"
-              style={{ padding: "6px 10px", fontSize: 13, display: "inline-flex" }}
-              onClick={() => {
-                if (window.innerWidth <= 960) {
-                  setMobileOpen(!mobileOpen);
-                } else {
-                  setSidebarCollapsed(!sidebarCollapsed);
-                }
-              }}
+              className="button outline mobile-menu-toggle"
+              aria-label="Open navigation"
+              aria-expanded={mobileOpen}
+              style={{ padding: "6px 10px", fontSize: 13 }}
+              onClick={() => setMobileOpen(!mobileOpen)}
             >
               ☰
             </button>
