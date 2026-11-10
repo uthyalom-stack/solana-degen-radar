@@ -357,10 +357,10 @@ async function runMarketScan(env: Env) {
           .run();
 
         // Preserve independent discovery evidence for DEX profile/boost and newly observed pool liquidity.
-        if (profileMints.includes(mint)) {
+        if ((profileMints as string[]).includes(mint)) {
           await recordDiscoveryEvidence(env.DB,mint,"dexscreener","latest_token_profile","token_profile","confirmed",{source:"DEX Screener latest token profile"},observed);
         }
-        if (boostMints.includes(mint)) {
+        if ((boostMints as string[]).includes(mint)) {
           await recordDiscoveryEvidence(env.DB,mint,"dexscreener","token_boost","token_boost","confirmed",{source:"DEX Screener token boosts"},observed);
         }
         await recordDiscoveryEvidence(env.DB,mint,"liquidity_pool",pair.pairAddress || pair.dexId || "unknown-pool",
