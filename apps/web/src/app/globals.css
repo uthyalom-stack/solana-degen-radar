@@ -742,3 +742,9 @@ body { background:radial-gradient(ellipse 70% 42% at 65% -10%,rgba(48,83,177,.22
  .discovery-view-intro { align-items:flex-start;flex-direction:column; }
  .discovery-result-count { white-space:normal; }
 }
+
+
+.terminal-workspace .audit-card.unknown { border-top:2px solid rgba(148,163,184,.55);background:rgba(17,24,39,.62); }
+.terminal-workspace .audit-card.unknown div { color:#aab6c8; }
+.sidebar.collapsed ~ .spotify-player { left:96px; }
+@media(max-width:960px) { .sidebar.collapsed ~ .spotify-player { left:10px; } }
