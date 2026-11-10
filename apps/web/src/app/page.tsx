@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { VersionedTransaction } from "@solana/web3.js";
+import SpotifyPlayer from "../components/spotify-player";
 
 type Token = {
   mint: string;
@@ -2122,6 +2123,8 @@ export default function Home() {
           </footer>
         </main>
       </div>
+
+      <SpotifyPlayer />
 
       {/* Mobile Bottom Navigation Bar */}
       <nav className="mobile-nav-bar">
