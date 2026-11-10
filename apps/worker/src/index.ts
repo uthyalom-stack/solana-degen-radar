@@ -352,7 +352,7 @@ async function runMarketScan(env: Env) {
             launchpad,
             holderInfo.holderCount,
             holderInfo.top10HolderPercent,
-            JSON.stringify({ dexId: pair.dexId, url: pair.url, pairAddress: pair.pairAddress })
+            JSON.stringify({ dexId: pair.dexId, url: pair.url, pairAddress: pair.pairAddress, info: pair.info || null, baseToken: token, quoteToken: pair.quoteToken || null })
           )
           .run();
 
