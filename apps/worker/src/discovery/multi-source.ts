@@ -92,7 +92,7 @@ export async function runMultiSourceDiscovery(env: Env): Promise<Record<string, 
      FROM tokens t LEFT JOIN token_snapshots s ON s.id = (
        SELECT s2.id FROM token_snapshots s2 WHERE s2.mint=t.mint ORDER BY s2.observed_at DESC LIMIT 1
      )
-     ORDER BY COALESCE(s.observed_at,t.first_seen_at) DESC LIMIT 60`
+     ORDER BY COALESCE(s.observed_at,t.first_seen_at) DESC LIMIT 30`
   ).all<any>();
   const rows = tokens.results || [];
   let evidenceCount = 0;
@@ -256,6 +256,49 @@ export async function runMultiSourceDiscovery(env: Env): Promise<Record<string, 
         "creator_attribution", "weak", { creatorAddress: token.creator_address, attributionSource: "tokens.creator_address" });
     }
   }
+
+  // (4b) Narrative-before-token: extract recurring hashtags/cashtags from public social observations
+  // even when no token mint currently matches the term.
+  const socialRows = await db.prepare(
+    "SELECT source,source_id,observed_at,text_content,metrics_json,url FROM social_events WHERE julianday(observed_at)>=julianday('now','-24 hours') ORDER BY observed_at DESC LIMIT 1000"
+  ).all<any>();
+  const emerging = new Map<string,{display:string;type:string;count:number;sources:Set<string>;engagement:number;evidence:any[]}>();
+  for (const post of socialRows.results || []) {
+    const body = String(post.text_content || "");
+    const matches = [
+      ...(body.match(/#[\\p{L}\\p{N}_]{3,}/gu) || []).map((v:string)=>({term:v.slice(1),type:"hashtag"})),
+      ...(body.match(/\\$[A-Z][A-Z0-9]{2,}/g) || []).map((v:string)=>({term:v.slice(1),type:"cashtag"})),
+    ];
+    let metrics:any = {};
+    try { metrics = JSON.parse(post.metrics_json || "{}"); } catch { metrics = {}; }
+    const engagement = ["likes","reposts","comments","views","score"].reduce((sum,key)=>sum+(Number(metrics[key])||0),0);
+    for (const match of matches) {
+      const normalized = match.term.toLowerCase().replace(/[^\\p{L}\\p{N}_]/gu,"").slice(0,64);
+      if (normalized.length < 3) continue;
+      const current = emerging.get(normalized) || {display:match.term,type:match.type,count:0,sources:new Set<string>(),engagement:0,evidence:[]};
+      current.count++;
+      current.sources.add(String(post.source || "unknown"));
+      current.engagement += engagement;
+      if (current.evidence.length < 5) current.evidence.push({source:post.source,url:post.url,sourceId:post.source_id,observedAt:post.observed_at});
+      emerging.set(normalized,current);
+    }
+  }
+  let emergingCount = 0;
+  for (const [term,value] of emerging) {
+    if (value.count < 2 && value.sources.size < 2) continue;
+    // Do not call an existing ticker a pre-token narrative.
+    const existing = await db.prepare("SELECT 1 AS found FROM tokens WHERE lower(symbol)=? LIMIT 1").bind(term).first<any>();
+    if (existing) continue;
+    await db.prepare(
+      `INSERT INTO emerging_narratives (normalized_term,display_term,term_type,first_seen_at,last_seen_at,mention_count,independent_source_count,engagement_total,evidence_json)
+       VALUES (?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(normalized_term) DO UPDATE SET display_term=excluded.display_term,last_seen_at=excluded.last_seen_at,
+         mention_count=excluded.mention_count,independent_source_count=excluded.independent_source_count,
+         engagement_total=excluded.engagement_total,evidence_json=excluded.evidence_json`
+    ).bind(term,value.display,value.type,isoNow(),isoNow(),value.count,value.sources.size,value.engagement,JSON.stringify(value.evidence)).run();
+    emergingCount++;
+  }
+  await sourceStatus(db,"narrative_before_token","partial",emergingCount,undefined,{windowHours:24,minimumMentions:2,note:"Signals are based on ingested public posts; coverage depends on connected social sources."});
 
   summary.tokens_examined = rows.length;
   summary.evidence_written = evidenceCount;
