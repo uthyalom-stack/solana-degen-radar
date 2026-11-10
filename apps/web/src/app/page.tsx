@@ -364,6 +364,11 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    const savedSpotifyClientId = window.localStorage.getItem("radar_spotify_client_id");
+    if (savedSpotifyClientId) setSpotifyClientId(savedSpotifyClientId);
+  }, []);
+
+  useEffect(() => {
     void refresh();
     const timer = setInterval(() => void refresh(), 30000);
     return () => clearInterval(timer);
@@ -1852,15 +1857,15 @@ export default function Home() {
 
               <div className="panel" style={{ padding: 16 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <strong>Optional Spotify Audio Dock</strong>
-                  <span className="tag neutral">Experimental</span>
+                  <strong>Spotify Streaming Player</strong>
+                  <span className="tag neutral">OAuth / Premium</span>
                 </div>
                 <div style={{ marginTop: 12, fontSize: 12 }}>
                   <p className="muted tiny" style={{ margin: "0 0 8px 0" }}>
-                    Ambient music while trading. Requires Spotify Developer Client ID (PKCE) and active Spotify Premium subscription for in-browser Web Playback SDK streaming.
+                    Connect your Spotify account to search tracks and control playback from this terminal. Requires Spotify Premium, a registered redirect URL, and the written commercial approval you confirmed.
                   </p>
                   <label style={{ fontSize: 11, color: "#8b99ac", display: "block" }}>
-                    Spotify Client ID (Optional):
+                    Spotify Developer Client ID:
                     <input
                       placeholder="Enter Client ID from developer.spotify.com"
                       value={spotifyClientId}
