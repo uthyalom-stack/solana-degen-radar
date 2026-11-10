@@ -26,6 +26,7 @@ declare global {
 }
 const AUTH_KEY = "sdr_spotify_session";
 const VERIFIER_KEY = "sdr_spotify_verifier";
+const STATE_KEY = "sdr_spotify_oauth_state";
 function getClientId() { return process.env.NEXT_PUBLIC_SPOTIFY_CLIENT_ID || (typeof window !== "undefined" ? window.localStorage.getItem("radar_spotify_client_id") || "" : ""); }
 const REDIRECT_URI = process.env.NEXT_PUBLIC_SPOTIFY_REDIRECT_URI || (typeof window !== "undefined" ? window.location.origin : "");
 
@@ -91,10 +92,12 @@ export default function SpotifyPlayer() {
     if (!REDIRECT_URI) { setError("Spotify redirect URI is missing."); return; }
     const verifier = await createVerifier();
     sessionStorage.setItem(VERIFIER_KEY, verifier);
+    const oauthState = base64url(crypto.getRandomValues(new Uint8Array(24)));
+    sessionStorage.setItem(STATE_KEY, oauthState);
     const scopes = ["streaming","user-read-email","user-read-private","user-read-playback-state","user-modify-playback-state","user-read-currently-playing"];
     const params = new URLSearchParams({
       client_id: getClientId(), response_type: "code", redirect_uri: REDIRECT_URI,
-      code_challenge_method: "S256", code_challenge: await challenge(verifier), scope: scopes.join(" "),
+      code_challenge_method: "S256", code_challenge: await challenge(verifier), scope: scopes.join(" "), state: oauthState,
     });
     window.location.assign("https://accounts.spotify.com/authorize?" + params.toString());
   }, []);
@@ -108,6 +111,9 @@ export default function SpotifyPlayer() {
       if (authError) { setError("Spotify authorization was declined."); url.searchParams.delete("error"); window.history.replaceState({}, "", url); return; }
       if (!code) { setAuthorized(Boolean(readSession()?.accessToken)); return; }
       const verifier = sessionStorage.getItem(VERIFIER_KEY);
+      const expectedState = sessionStorage.getItem(STATE_KEY);
+      const returnedState = url.searchParams.get("state");
+      if (!expectedState || !returnedState || returnedState !== expectedState) { setError("Spotify sign-in state validation failed. Please connect again."); sessionStorage.removeItem(VERIFIER_KEY); sessionStorage.removeItem(STATE_KEY); return; }
       if (!verifier || !getClientId()) { setError("Spotify sign-in could not be completed. Please connect again."); return; }
       try {
         setBusy(true);
@@ -120,6 +126,7 @@ export default function SpotifyPlayer() {
           expiresAt: Date.now() + data.expires_in * 1000,
         }));
         sessionStorage.removeItem(VERIFIER_KEY);
+        sessionStorage.removeItem(STATE_KEY);
         url.searchParams.delete("code"); url.searchParams.delete("state");
         window.history.replaceState({}, "", url);
         if (!cancelled) setAuthorized(true);
