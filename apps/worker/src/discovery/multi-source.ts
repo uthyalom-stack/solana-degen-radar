@@ -175,15 +175,62 @@ export async function runMultiSourceDiscovery(env: Env): Promise<Record<string, 
     }
   }
 
-  // (6) Bundle analysis is not fabricated from ordinary transaction ordering.
-  // A configured Jito/block-engine feed is required to identify bundle membership with confidence.
-  await sourceStatus(db, "jito_bundle", "disabled", 0, "No authenticated bundle/indexer feed is configured; Jito tip transfers alone are not proof of bundle membership.");
+  // (6) Jito: detect configured tip-account transfers linked to tracked wallets.
+  // A tip is only a weak bundle indicator; it does not prove bundle membership or malicious coordination.
+  const tipAccounts = (env.JITO_TIP_ACCOUNTS || "").split(",").map(x => x.trim()).filter(Boolean);
+  const rpc = new SolanaRpcClient(env);
+  let jitoIndicators = 0;
+  let bridgeIndicators = 0;
+  const activityRows = await db.prepare(
+    "SELECT wallet_address,mint,tx_signature,observed_at FROM wallet_activities WHERE tx_signature IS NOT NULL ORDER BY observed_at DESC LIMIT 100"
+  ).all<any>();
+  const seenSignatures = new Set<string>();
+  for (const activity of activityRows.results || []) {
+    const signature = String(activity.tx_signature || "");
+    if (!signature || seenSignatures.has(signature)) continue;
+    seenSignatures.add(signature);
+    const transaction = await rpc.getParsedTransaction(signature);
+    if (!transaction) continue;
 
-  // (7) Cross-chain bridge flow requires Wormhole/deBridge message/indexer data; do not guess from ordinary SOL transfers.
-  await sourceStatus(db, "cross_chain_flows", "disabled", 0, "No bridge message/indexer provider is configured.");
+    if (tipAccounts.length) {
+      const tip = transaction.transfers.find(transfer => tipAccounts.includes(transfer.to));
+      if (tip) {
+        await db.prepare(
+          `INSERT OR IGNORE INTO bundle_observations (id,mint,signature,slot,bundle_provider,tip_lamports,wallet_addresses_json,observed_at,evidence_json)
+           VALUES (?,?,?,?,?,?,?,?,?)`
+        ).bind(makeId(),activity.mint,signature,transaction.slot,"jito_tip_transfer_indicator",tip.lamports,
+          JSON.stringify([activity.wallet_address]),activity.observed_at,JSON.stringify({tipAccount:tip.to,from:tip.from,classification:"tip_transfer_not_bundle_proof"})).run();
+        await recordDiscoveryEvidence(db,activity.mint,"jito","tip:"+signature,"jito_tip_transfer","weak",{
+          wallet:activity.wallet_address,signature,tipAccount:tip.to,tipLamports:tip.lamports,
+          caveat:"A tip transfer alone does not prove Jito bundle membership."
+        },activity.observed_at);
+        jitoIndicators++;
+      }
+    }
+
+    const bridgePrograms = (env.BRIDGE_PROGRAM_IDS || "").split(",").map(x => x.trim()).filter(Boolean);
+    const matchedBridgeProgram = transaction.programIds.find(programId => bridgePrograms.includes(programId));
+    if (matchedBridgeProgram) {
+      await db.prepare(
+        `INSERT OR IGNORE INTO bridge_flow_observations (id,wallet_address,source_chain,destination_chain,tx_hash,observed_at,provider,evidence_json)
+         VALUES (?,?,?,?,?,?,?,?)`
+      ).bind(makeId(),activity.wallet_address,"unknown","solana",signature,activity.observed_at,"solana_rpc_bridge_program",
+        JSON.stringify({programId:matchedBridgeProgram,slot:transaction.slot,classification:"bridge_program_interaction_only"})).run();
+      await recordDiscoveryEvidence(db,activity.mint,"cross_chain","bridge:"+signature,"bridge_program_interaction","weak",{
+        wallet:activity.wallet_address,signature,programId:matchedBridgeProgram,
+        sourceChain:"unknown",amountUsd:null,caveat:"Program interaction does not identify bridge direction or transferred value."
+      },activity.observed_at);
+      bridgeIndicators++;
+    }
+  }
+  await sourceStatus(db,"jito_bundle",tipAccounts.length ? "partial" : "disabled",jitoIndicators,
+    tipAccounts.length ? undefined : "Set JITO_TIP_ACCOUNTS to monitor known tip destinations; tip transfers remain weak evidence, not confirmed bundles.",
+    {tipAccountCount:tipAccounts.length,transactionsChecked:seenSignatures.size});
+  await sourceStatus(db,"cross_chain_flows",env.BRIDGE_PROGRAM_IDS ? "partial" : "disabled",bridgeIndicators,
+    env.BRIDGE_PROGRAM_IDS ? undefined : "Set BRIDGE_PROGRAM_IDS to monitor bridge program interactions; full transfer attribution needs Wormhole/deBridge message decoding.",
+    {transactionsChecked:seenSignatures.size});
 
   // (8) Route discovery: test small, bounded set of actual mint->SOL quotes; quote availability is not proof of execution.
-  const rpc = new SolanaRpcClient(env);
   for (const token of rows.slice(0, 8)) {
     try {
       let decimals = Number(token.decimals);
@@ -306,7 +353,7 @@ export async function runMultiSourceDiscovery(env: Env): Promise<Record<string, 
   await sourceStatus(db, "raw_rpc", "partial", Number(summary.raw_rpc_candidates || 0), undefined, { pipeline: "bounded recent Tokenkeg and Token-2022 mint-initialization polling; a streaming/indexer feed is needed for complete coverage" });
   await sourceStatus(db, "wallet_graph", "partial", evidenceCount, undefined, { pipeline: "persisted wallet relationship evidence; upstream wallet history completeness remains dependent on RPC ingestion" });
   await sourceStatus(db, "liquidity", "partial", rows.length, undefined, { pipeline: "historical token snapshots; independent buyer counts not inferred" });
-  await sourceStatus(db, "social_narrative", "partial", evidenceCount, undefined, { pipeline: "matches existing social events; narrative-before-token trend detection needs broader social sources" });
+  await sourceStatus(db, "social_narrative", "partial", evidenceCount, undefined, { pipeline: "links known token aliases to social events and separately tracks emerging hashtags/cashtags before token matching" });
   await sourceStatus(db, "launchpad", "partial", rows.length, undefined, { pipeline: "PumpPortal events and persisted launchpad attribution" });
   await sourceStatus(db, "trading_route", "healthy", routeChecks, undefined, { provider: "Jupiter quote API", note: "quote availability is not execution proof" });
   await sourceStatus(db, "developer_community", "partial", rows.length, undefined, { pipeline: "extracts project website/social/GitHub URLs from token metadata; no domain-age or repository-activity provider yet" });
