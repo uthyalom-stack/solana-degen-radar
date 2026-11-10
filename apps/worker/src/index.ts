@@ -852,6 +852,37 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
       });
     }
 
+    // Multi-source discovery registry and transparent source health.
+    if (path === "/api/discovery/candidates" && method === "GET") {
+      const limit = Math.min(200, Math.max(1, Number(url.searchParams.get("limit")) || 60));
+      const rows = await env.DB.prepare(
+        `SELECT dc.mint,dc.first_discovered_at,dc.last_discovered_at,dc.discovery_score,dc.source_count,
+          dc.source_summary_json,t.name,t.symbol,t.launchpad,t.creator_address,
+          (SELECT price_usd FROM token_snapshots ts WHERE ts.mint=dc.mint ORDER BY observed_at DESC LIMIT 1) AS price_usd,
+          (SELECT liquidity_usd FROM token_snapshots ts WHERE ts.mint=dc.mint ORDER BY observed_at DESC LIMIT 1) AS liquidity_usd,
+          (SELECT risk_score FROM risk_assessments ra WHERE ra.mint=dc.mint ORDER BY assessed_at DESC LIMIT 1) AS risk_score
+         FROM discovery_candidates dc JOIN tokens t ON t.mint=dc.mint
+         ORDER BY dc.discovery_score DESC,dc.last_discovered_at DESC LIMIT ?`
+      ).bind(limit).all<any>();
+      return json(rows.results || []);
+    }
+
+    if (path === "/api/discovery/sources" && method === "GET") {
+      const rows = await env.DB.prepare(
+        "SELECT source_type,status,last_attempt_at,last_success_at,items_seen,error_message,details_json FROM discovery_source_status ORDER BY source_type"
+      ).all<any>();
+      return json(rows.results || []);
+    }
+
+    if (path === "/api/discovery/evidence" && method === "GET") {
+      const mint = String(url.searchParams.get("mint") || "").trim();
+      if (!mint) throw new ApiError("mint query parameter is required", 400);
+      const rows = await env.DB.prepare(
+        "SELECT source_type,source_id,evidence_type,confidence,observed_at,evidence_json FROM discovery_evidence WHERE mint=? ORDER BY observed_at DESC LIMIT 200"
+      ).bind(mint).all<any>();
+      return json(rows.results || []);
+    }
+
     // 4. Narratives
     if (path === "/api/narratives" && method === "GET") {
       const rows = await env.DB.prepare(
