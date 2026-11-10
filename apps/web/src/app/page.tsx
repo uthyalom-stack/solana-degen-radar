@@ -669,7 +669,7 @@ export default function Home() {
     }
   }
 
-  // Filtered tokens
+  // Filtered tokens: each discovery view has its own meaningful sort order.
   const filteredTokens = tokens.filter(t => {
     if (search.trim()) {
       const q = search.toLowerCase();
@@ -679,10 +679,15 @@ export default function Home() {
       if (!matchName && !matchSymbol && !matchMint) return false;
     }
     if (launchpadFilter !== "all" && t.launchpad !== launchpadFilter) return false;
+    if (riskFilter !== "all" && t.risk_score == null) return false;
     if (riskFilter === "low" && Number(t.risk_score) >= 40) return false;
     if (riskFilter === "medium" && (Number(t.risk_score) < 40 || Number(t.risk_score) >= 70)) return false;
     if (riskFilter === "high" && Number(t.risk_score) < 70) return false;
     return true;
+  }).sort((a, b) => {
+    if (tab === "launches") return new Date(b.observed_at || 0).getTime() - new Date(a.observed_at || 0).getTime();
+    if (tab === "trending") return Number(b.momentum_score ?? -1) - Number(a.momentum_score ?? -1);
+    return Number(b.volume_1h_usd ?? 0) - Number(a.volume_1h_usd ?? 0);
   });
 
   const cash = portfolio?.cash_balance ?? overview?.portfolio?.cash_balance ?? 100;
@@ -984,12 +989,12 @@ export default function Home() {
           {/* Main Terminal Workspace */}
           <section className={`panel section terminal-workspace tab-${tab}`}>
         <div className="workspace-topline"><div><span className="workspace-kicker">{activeWorkspace.eyebrow}</span><h2>{activeWorkspace.title}</h2><p className="workspace-description">{activeWorkspace.description}</p></div><div className="workspace-meta"><span className="workspace-live-dot"/>{API ? "API CONFIGURED" : "API OFFLINE"}</div></div>
-        <div className="workspace-metrics">{activeWorkspace.metrics.map((metric, index) => <article className="workspace-metric-card" key={metric.label}><span>{metric.label}</span><strong>{metric.value}</strong><small>{metric.detail}</small><i className={`metric-accent metric-accent-${index % 3}`}/></article>)}</div>
+        {tab !== "overview" && <div className="workspace-metrics">{activeWorkspace.metrics.map((metric, index) => <article className="workspace-metric-card" key={metric.label}><span>{metric.label}</span><strong>{metric.value}</strong><small>{metric.detail}</small><i className={`metric-accent metric-accent-${index % 3}`}/></article>)}</div>}
 
         {/* SECTION 1: RADAR OVERVIEW FEED */}
         {(tab === "overview" || tab === "launches" || tab === "trending") && (
           <div>
-            <div className="filter-bar discovery-filter-bar">
+            <div className="discovery-view-intro"><div><span className="workspace-kicker">{tab === "launches" ? "LATEST OBSERVATIONS" : tab === "trending" ? "MOMENTUM RANKING" : "LIVE TOKEN UNIVERSE"}</span><h3>{tab === "launches" ? "Recently observed launches" : tab === "trending" ? "Tokens ranked by momentum" : "Tracked Solana assets"}</h3></div><span className="discovery-result-count">{filteredTokens.length} MATCHING ASSETS</span></div>\n            <div className="filter-bar discovery-filter-bar">
               <input
                 placeholder="Search symbol, name, or mint address…"
                 value={search}
@@ -1029,7 +1034,7 @@ export default function Home() {
                     <th>Price</th>
                     <th>Liquidity</th>
                     <th>1h Vol / 5m</th>
-                    <th>Momentum</th>
+                    <th>{tab === "launches" ? "Launch Momentum" : "Momentum Score"}</th>
                     <th>Risk Assessment</th>
                     <th>Whale %</th>
                     <th>Actions</th>
@@ -1069,7 +1074,7 @@ export default function Home() {
                                 : "high"
                             }`}
                           >
-                            {t.momentum_score ?? "—"}
+                            {t.momentum_score == null ? "UNKNOWN" : t.momentum_score}
                           </span>
                         </td>
                         <td>
@@ -1082,10 +1087,10 @@ export default function Home() {
                                 : "low"
                             }`}
                           >
-                            {t.risk_score ?? "—"}/100 {t.risk_status === "partial" ? "· partial" : ""}
+                            {t.risk_score == null ? "UNKNOWN" : `${t.risk_score}/100`} {t.risk_status === "partial" ? "· partial" : ""}
                           </span>
                           <div className="muted tiny" style={{ maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis" }}>
-                            {[...flags, ...unknowns].slice(0, 2).join(" · ") || "Standard indicators"}
+                            {[...flags, ...unknowns].slice(0, 2).join(" · ") || (t.risk_score == null ? "Assessment unavailable" : "No recorded flags") }
                           </div>
                         </td>
                         <td>{t.top10_holder_percent != null ? `${t.top10_holder_percent.toFixed(1)}%` : "—"}</td>
