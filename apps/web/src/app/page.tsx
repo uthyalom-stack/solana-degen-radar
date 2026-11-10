@@ -242,6 +242,7 @@ export default function Home() {
   const [tradingMode, setTradingMode] = useState<"simulation" | "live">("simulation");
   const [tab, setTab] = useState<
     | "overview"
+    | "discovery"
     | "launches"
     | "trending"
     | "wallets"
@@ -267,6 +268,9 @@ export default function Home() {
   const [providersHealth, setProvidersHealth] = useState<ProviderHealth[]>([]);
   const [breakoutSignals, setBreakoutSignals] = useState<BreakoutSignal[]>([]);
   const [backtestRuns, setBacktestRuns] = useState<BacktestRun[]>([]);
+  const [discoveryCandidates, setDiscoveryCandidates] = useState<any[]>([]);
+  const [discoverySources, setDiscoverySources] = useState<any[]>([]);
+  const [emergingNarratives, setEmergingNarratives] = useState<any[]>([]);
 
   // Filtering & Search
   const [search, setSearch] = useState("");
@@ -337,7 +341,7 @@ export default function Home() {
       return;
     }
     try {
-      const [o, t, a, n, p, f, pr, bks, bts] = await Promise.all([
+      const [o, t, a, n, p, f, pr, bks, bts, dc, ds, en] = await Promise.all([
         apiRequest<Overview>("/api/status").catch(() => null),
         apiRequest<Token[]>("/api/tokens").catch(() => []),
         apiRequest<Alert[]>("/api/alerts").catch(() => []),
@@ -347,6 +351,9 @@ export default function Home() {
         apiRequest<ProviderHealth[]>("/api/providers").catch(() => []),
         apiRequest<BreakoutSignal[]>("/api/breakouts").catch(() => []),
         apiRequest<BacktestRun[]>("/api/backtest/runs").catch(() => []),
+        apiRequest<any[]>("/api/discovery/candidates").catch(() => []),
+        apiRequest<any[]>("/api/discovery/sources").catch(() => []),
+        apiRequest<any[]>("/api/discovery/narratives").catch(() => []),
       ]);
       if (o) setOverview(o);
       setTokens(t);
@@ -357,6 +364,9 @@ export default function Home() {
       setProvidersHealth(pr);
       setBreakoutSignals(bks);
       setBacktestRuns(bts);
+      setDiscoveryCandidates(dc);
+      setDiscoverySources(ds);
+      setEmergingNarratives(en);
       setError("");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Unable to reach Radar API");
@@ -701,6 +711,11 @@ export default function Home() {
       { label: "Open signals", value: String(breakoutSignals.length), detail: "Breakout detections" },
       { label: "Portfolio equity", value: money(equity), detail: "Current selected mode" },
     ] },
+    discovery: { eyebrow: "DISCOVERY / MULTI-SOURCE INTELLIGENCE", title: "Unconventional discovery", description: "Find early candidates through raw chain activity, wallet relationships, liquidity changes, social narratives, launchpad migration and trading-route evidence.", metrics: [
+      { label: "Evidence-backed candidates", value: String(discoveryCandidates.length), detail: "Stored in the discovery registry" },
+      { label: "Emerging narratives", value: String(emergingNarratives.length), detail: "Terms seen before token matching" },
+      { label: "Reporting sources", value: String(discoverySources.length), detail: "Includes disabled and partial sources" },
+    ] },
     launches: { eyebrow: "DISCOVERY / NEW PAIRS", title: "New launch monitor", description: "Review newly discovered mints, liquidity, venue and early risk evidence before considering an entry.", metrics: [
       { label: "Observed launches", value: String(tokens.filter(t => t.launchpad).length), detail: "With venue attribution" },
       { label: "High risk", value: String(tokens.filter(t => Number(t.risk_score) >= 70).length), detail: "Risk score ≥ 70" },
@@ -782,6 +797,7 @@ export default function Home() {
       title: "Discovery & Radar",
       items: [
         { id: "overview", label: "Overview Feed", icon: "🛰️" },
+        { id: "discovery", label: "Unconventional Discovery", icon: "🧭" },
         { id: "launches", label: "New Launches", icon: "🚀" },
         { id: "trending", label: "Trending Tokens", icon: "🔥" },
       ],
@@ -999,6 +1015,52 @@ export default function Home() {
           <section className={`panel section terminal-workspace tab-${tab}`}>
         <div className="workspace-topline"><div><span className="workspace-kicker">{activeWorkspace.eyebrow}</span><h2>{activeWorkspace.title}</h2><p className="workspace-description">{activeWorkspace.description}</p></div><div className="workspace-meta"><span className="workspace-live-dot"/>{API ? "API CONFIGURED" : "API OFFLINE"}</div></div>
         {tab !== "overview" && <div className="workspace-metrics">{activeWorkspace.metrics.map((metric, index) => <article className="workspace-metric-card" key={metric.label}><span>{metric.label}</span><strong>{metric.value}</strong><small>{metric.detail}</small><i className={`metric-accent metric-accent-${index % 3}`}/></article>)}</div>}
+
+        {tab === "discovery" && (
+          <div className="discovery-intelligence-view">
+            <div className="discovery-view-intro">
+              <div><span className="workspace-kicker">MULTI-SOURCE CANDIDATE REGISTRY</span><h3>Early discovery evidence</h3><p className="muted small">A discovery score measures accumulated evidence, not expected returns or a buy recommendation.</p></div>
+              <span className="discovery-result-count">{discoveryCandidates.length} CANDIDATES</span>
+            </div>
+            <div className="workspace-metrics">
+              {discoverySources.map(source => (
+                <article className="workspace-metric-card" key={source.source_type}>
+                  <span>{String(source.source_type).replaceAll("_"," ")}</span>
+                  <strong>{String(source.status || "unknown").toUpperCase()}</strong>
+                  <small>{source.items_seen || 0} observations · {source.last_success_at ? "last successful run recorded" : "no successful run recorded"}</small>
+                </article>
+              ))}
+            </div>
+            <div className="table-wrap discovery-table-wrap">
+              <table>
+                <thead><tr><th>Token</th><th>Discovery score</th><th>Sources</th><th>Liquidity</th><th>Risk</th><th>Last observed</th></tr></thead>
+                <tbody>
+                  {discoveryCandidates.map(candidate => (
+                    <tr key={candidate.mint}>
+                      <td><strong>{candidate.symbol || "UNKNOWN"}</strong><div className="muted small">{candidate.name || candidate.mint}</div><div className="muted tiny">{candidate.mint}</div></td>
+                      <td>{candidate.discovery_score ?? 0}</td>
+                      <td>{candidate.source_count ?? 0}<div className="muted tiny">{(JSON.parse(candidate.source_summary_json || "[]") as string[]).join(" · ")}</div></td>
+                      <td>{candidate.liquidity_usd == null ? "—" : money(candidate.liquidity_usd)}</td>
+                      <td>{candidate.risk_score == null ? "UNKNOWN" : String(candidate.risk_score) + "/100"}</td>
+                      <td>{candidate.last_discovered_at ? new Date(candidate.last_discovered_at).toLocaleString() : "—"}</td>
+                    </tr>
+                  ))}
+                  {!discoveryCandidates.length && <tr><td colSpan={6} className="muted">No evidence-backed candidates yet. Run a market scan and check that the Worker migration is applied.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+            <div className="discovery-view-intro"><div><span className="workspace-kicker">NARRATIVE BEFORE TOKEN</span><h3>Emerging meme terms</h3></div><span className="discovery-result-count">{emergingNarratives.length} TERMS</span></div>
+            <div className="table-wrap discovery-table-wrap">
+              <table>
+                <thead><tr><th>Term</th><th>Type</th><th>Mentions</th><th>Independent sources</th><th>Engagement</th><th>Last seen</th></tr></thead>
+                <tbody>
+                  {emergingNarratives.map(item => <tr key={item.normalized_term}><td><strong>{item.display_term}</strong></td><td>{item.term_type}</td><td>{item.mention_count}</td><td>{item.independent_source_count}</td><td>{Number(item.engagement_total || 0).toLocaleString()}</td><td>{item.last_seen_at ? new Date(item.last_seen_at).toLocaleString() : "—"}</td></tr>)}
+                  {!emergingNarratives.length && <tr><td colSpan={6} className="muted">No emerging terms meet the current minimum-mention threshold.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
 
         {/* SECTION 1: RADAR OVERVIEW FEED */}
         {(tab === "overview" || tab === "launches" || tab === "trending") && (
