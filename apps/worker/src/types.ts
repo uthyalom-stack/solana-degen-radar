@@ -20,6 +20,9 @@ export interface Env {
   PAPER_STARTING_BALANCE?: string;
   X_BEARER_TOKEN?: string;
   REDDIT_USER_AGENT?: string;
+  JITO_TIP_ACCOUNTS?: string;
+  BRIDGE_PROGRAM_IDS?: string;
+  SOLANA_DISCOVERY_PROGRAM_IDS?: string;
 }
 
 export type Pair = {
