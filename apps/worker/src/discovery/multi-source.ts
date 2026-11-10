@@ -106,8 +106,8 @@ export async function runMultiSourceDiscovery(env: Env): Promise<Record<string, 
     const relations = await db.prepare(
       `SELECT wr.relationship_type,wr.confidence_score,wr.evidence_json,wr.wallet_a,wr.wallet_b
        FROM wallet_relationships wr
-       JOIN wallet_observations wo ON (wo.wallet_address=wr.wallet_a OR wo.wallet_address=wr.wallet_b)
-       WHERE wo.mint=? LIMIT 30`
+       JOIN wallet_activities wa ON (wa.wallet_address=wr.wallet_a OR wa.wallet_address=wr.wallet_b)
+       WHERE wa.mint=? LIMIT 30`
     ).bind(token.mint).all<any>();
     for (const rel of relations.results || []) {
       await recordDiscoveryEvidence(db, token.mint, "wallet_graph", `${rel.wallet_a}:${rel.wallet_b}:${rel.relationship_type}`,
