@@ -43,6 +43,13 @@ export type Pair = {
     h24?: { buys?: number; sells?: number };
   };
   boosts?: { active?: number };
+  info?: {
+    imageUrl?: string;
+    header?: string;
+    openGraph?: string;
+    websites?: Array<{ label?: string; url?: string }>;
+    socials?: Array<{ type?: string; url?: string }>;
+  };
 };
 
 export interface TokenRow {
