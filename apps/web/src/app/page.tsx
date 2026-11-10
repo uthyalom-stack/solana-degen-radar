@@ -2068,7 +2068,7 @@ export default function Home() {
                 </div>
               </div>
 
-              <div className="audit-card pass">
+              <div className={`audit-card ${inspectedToken.risk_score == null ? "unknown" : Number(inspectedToken.risk_score) >= 70 ? "flag" : "pass"}`}>
                 <strong>Overall Risk Heuristic</strong>
                 <div>
                   Score: {inspectedToken.risk_score ?? "—"}/100 ({inspectedToken.risk_score == null ? "UNKNOWN" : Number(inspectedToken.risk_score) >= 70 ? "HIGH" : Number(inspectedToken.risk_score) >= 40 ? "MEDIUM" : "LOW"})
