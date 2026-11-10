@@ -43,12 +43,23 @@ async function createVerifier() {
 async function challenge(verifier: string) {
   return base64url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
 }
+async function readSpotifyResponse(response: Response) {
+  const raw = await response.text();
+  if (!raw.trim()) return null;
+  try { return JSON.parse(raw); }
+  catch {
+    if (response.status === 403 || /active premium|premium subscription|premium required/i.test(raw)) {
+      throw new Error("Spotify requires an eligible Premium subscription for in-app playback. Your account may not currently have playback access.");
+    }
+    throw new Error(raw.slice(0, 240) || `Spotify returned an unreadable response (HTTP ${response.status}).`);
+  }
+}
 async function tokenRequest(body: URLSearchParams) {
   const response = await fetch("https://accounts.spotify.com/api/token", {
     method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body,
   });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error_description || data.error || "Spotify authorization failed");
+  const data = await readSpotifyResponse(response);
+  if (!response.ok) throw new Error(data?.error_description || data?.error || "Spotify authorization failed");
   return data;
 }
 async function validSession() {
@@ -199,8 +210,14 @@ export default function SpotifyPlayer() {
     const response = await fetch("https://api.spotify.com/v1" + path, {
       ...init, headers: { Authorization: "Bearer " + accessToken, "Content-Type": "application/json", ...(init?.headers || {}) },
     });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error?.message || "Spotify request failed");
+    const data = await readSpotifyResponse(response);
+    if (!response.ok) {
+      const message = typeof data === "string" ? data : data?.error?.message || data?.error_description || "";
+      if (response.status === 403 || /active premium|premium subscription|premium required/i.test(message)) {
+        throw new Error("Spotify requires an eligible Premium subscription for in-app playback. Check that the signed-in account has Premium and that Spotify allows Web Playback SDK access for this app.");
+      }
+      throw new Error(message || `Spotify request failed (HTTP ${response.status}).`);
+    }
     return data;
   }, [token]);
 
