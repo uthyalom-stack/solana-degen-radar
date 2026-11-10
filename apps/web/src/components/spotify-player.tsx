@@ -108,7 +108,7 @@ export default function SpotifyPlayer() {
       const url = new URL(window.location.href);
       const code = url.searchParams.get("code");
       const authError = url.searchParams.get("error");
-      if (authError) { setError("Spotify authorization was declined."); url.searchParams.delete("error"); window.history.replaceState({}, "", url); return; }
+      if (authError) { setError("Spotify authorization was declined."); url.searchParams.delete("error"); url.searchParams.delete("state"); window.history.replaceState({}, "", url); sessionStorage.removeItem(VERIFIER_KEY); sessionStorage.removeItem(STATE_KEY); return; }
       if (!code) { setAuthorized(Boolean(readSession()?.accessToken)); return; }
       const verifier = sessionStorage.getItem(VERIFIER_KEY);
       const expectedState = sessionStorage.getItem(STATE_KEY);
@@ -145,13 +145,21 @@ export default function SpotifyPlayer() {
         await token();
         if (!window.Spotify) {
           await new Promise<void>((resolve, reject) => {
+            let settled = false;
+            const finish = () => { if (!settled) { settled = true; resolve(); } };
+            window.onSpotifyWebPlaybackSDKReady = finish;
             const existing = document.querySelector<HTMLScriptElement>('script[data-spotify-sdk="true"]');
-            if (existing) { if (window.Spotify) resolve(); else existing.addEventListener("load", () => resolve(), { once: true }); return; }
+            if (existing) {
+              if (window.Spotify) finish();
+              else existing.addEventListener("error", () => reject(new Error("Spotify player SDK failed to load")), { once: true });
+              return;
+            }
             const script = document.createElement("script");
-            script.src = "https://sdk.scdn.co/spotify-player.js"; script.async = true; script.dataset.spotifySdk = "true";
-            script.onload = () => resolve(); script.onerror = () => reject(new Error("Spotify player SDK failed to load"));
+            script.src = "https://sdk.scdn.co/spotify-player.js";
+            script.async = true;
+            script.dataset.spotifySdk = "true";
+            script.onerror = () => reject(new Error("Spotify player SDK failed to load"));
             document.body.appendChild(script);
-            window.onSpotifyWebPlaybackSDKReady = () => setSdkReady(true);
           });
         }
         if (window.Spotify) setSdkReady(true);
@@ -212,7 +220,7 @@ export default function SpotifyPlayer() {
 
   const disconnect = () => {
     playerRef.current?.disconnect(); playerRef.current = null; deviceRef.current = null;
-    sessionStorage.removeItem(AUTH_KEY); sessionStorage.removeItem(VERIFIER_KEY);
+    sessionStorage.removeItem(AUTH_KEY); sessionStorage.removeItem(VERIFIER_KEY); sessionStorage.removeItem(STATE_KEY);
     setAuthorized(false); setConnected(false); setPlaying(false); setTrack(null); setResults([]);
   };
 
