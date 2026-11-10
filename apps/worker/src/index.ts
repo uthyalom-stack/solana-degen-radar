@@ -17,6 +17,7 @@ import { XAdapter } from "./adapters/x";
 import { DexScreenerClient } from "./discovery/dexscreener";
 import { PumpFunDiscovery } from "./discovery/pumpfun";
 import { SolanaRpcClient } from "./discovery/solana-rpc";
+import { recordDiscoveryEvidence, runMultiSourceDiscovery } from "./discovery/multi-source";
 import { PaperTradingEngine } from "./paper-trading";
 import { WalletIntelligenceEngine } from "./intelligence/wallet-intel";
 import { BreakoutEngine } from "./intelligence/breakout";
@@ -142,6 +143,22 @@ async function runMarketScan(env: Env) {
     const dexClient = new DexScreenerClient(env);
     const rpcClient = new SolanaRpcClient(env);
 
+    // Discover mint initialization directly from Tokenkeg and Token-2022 program history.
+    const rawRpcMints = await rpcClient.discoverRecentMintInitializations(6).catch(() => []);
+    for (const item of rawRpcMints) {
+      const observedAt = item.blockTime ? new Date(item.blockTime * 1000).toISOString() : now();
+      await env.DB.prepare(
+        `INSERT OR IGNORE INTO tokens (mint,name,symbol,decimals,first_seen_at,source,metadata_json)
+         VALUES (?,NULL,NULL,?,?,?,?)`
+      ).bind(item.mint,item.decimals,observedAt,"solana_rpc",JSON.stringify({
+        signature:item.signature,slot:item.slot,tokenProgram:item.tokenProgram,mintAuthority:item.mintAuthority,
+        discoveryMethod:"raw_rpc_mint_initialization"
+      })).run();
+      await recordDiscoveryEvidence(env.DB,item.mint,"raw_rpc",item.signature,"mint_initialization","confirmed",{
+        signature:item.signature,slot:item.slot,tokenProgram:item.tokenProgram,decimals:item.decimals,mintAuthority:item.mintAuthority
+      },observedAt);
+    }
+
     const [profileMints, boostMints, launchMints] = await Promise.all([
       dexClient.getLatestProfiles().catch(e => {
         errors.push(`Profiles error: ${e}`);
@@ -154,7 +171,12 @@ async function runMarketScan(env: Env) {
       PumpFunDiscovery.getRecentPumpPortalLaunches(env.DB, 20).catch(() => []),
     ]);
 
-    const candidates = Array.from(new Set([...profileMints.slice(0, 15), ...boostMints.slice(0, 15), ...launchMints.slice(0, 10)])).slice(0, 30);
+    const candidates = Array.from(new Set([
+      ...rawRpcMints.map(item => item.mint),
+      ...profileMints.slice(0, 15),
+      ...boostMints.slice(0, 15),
+      ...launchMints.slice(0, 10),
+    ])).slice(0, 40);
 
     if (candidates.length > 0) {
       const pairs = await dexClient.getPairsForMints(candidates);
@@ -333,6 +355,16 @@ async function runMarketScan(env: Env) {
             JSON.stringify({ dexId: pair.dexId, url: pair.url, pairAddress: pair.pairAddress })
           )
           .run();
+
+        // Preserve independent discovery evidence for DEX profile/boost and newly observed pool liquidity.
+        if (profileMints.includes(mint)) {
+          await recordDiscoveryEvidence(env.DB,mint,"dexscreener","latest_token_profile","token_profile","confirmed",{source:"DEX Screener latest token profile"},observed);
+        }
+        if (boostMints.includes(mint)) {
+          await recordDiscoveryEvidence(env.DB,mint,"dexscreener","token_boost","token_boost","confirmed",{source:"DEX Screener token boosts"},observed);
+        }
+        await recordDiscoveryEvidence(env.DB,mint,"liquidity_pool",pair.pairAddress || pair.dexId || "unknown-pool",
+          "pool_market_pair","strong",{dexId:pair.dexId,pairAddress:pair.pairAddress,liquidityUsd:num(pair.liquidity?.usd),volume5mUsd:num(pair.volume?.m5),volume1hUsd:num(pair.volume?.h1),buys5m:num(pair.txns?.m5?.buys),sells5m:num(pair.txns?.m5?.sells)},observed);
 
         // Save token price snapshot
         await env.DB.prepare(
@@ -910,7 +942,9 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
 
     // 8. Trigger Scans
     if (path === "/api/scan" && method === "POST") {
-      return json(await runMarketScan(env));
+      const market = await runMarketScan(env);
+      const advanced = await runMultiSourceDiscovery(env).catch(error => ({ error: String(error) }));
+      return json({ ...market, advancedDiscovery: advanced });
     }
 
     if (path === "/api/social/scan" && method === "POST") {
@@ -1594,6 +1628,7 @@ export default {
       Promise.all([
         runMarketScan(env),
         runSocialScan(env),
+        runMultiSourceDiscovery(env),
         dispatchPendingAlerts(env),
       ])
     );
