@@ -26,7 +26,7 @@ declare global {
 }
 const AUTH_KEY = "sdr_spotify_session";
 const VERIFIER_KEY = "sdr_spotify_verifier";
-const CLIENT_ID = process.env.NEXT_PUBLIC_SPOTIFY_CLIENT_ID || "";
+function getClientId() { return process.env.NEXT_PUBLIC_SPOTIFY_CLIENT_ID || (typeof window !== "undefined" ? window.localStorage.getItem("radar_spotify_client_id") || "" : ""); }
 const REDIRECT_URI = process.env.NEXT_PUBLIC_SPOTIFY_REDIRECT_URI || (typeof window !== "undefined" ? window.location.origin : "");
 
 function readSession() {
@@ -56,7 +56,7 @@ async function validSession() {
   if (Date.now() < session.expiresAt - 60_000) return session;
   if (!session.refreshToken) { sessionStorage.removeItem(AUTH_KEY); return null; }
   const data = await tokenRequest(new URLSearchParams({
-    grant_type: "refresh_token", refresh_token: session.refreshToken, client_id: CLIENT_ID,
+    grant_type: "refresh_token", refresh_token: session.refreshToken, client_id: getClientId(),
   }));
   session = { ...session, accessToken: data.access_token, refreshToken: data.refresh_token || session.refreshToken, expiresAt: Date.now() + data.expires_in * 1000 };
   sessionStorage.setItem(AUTH_KEY, JSON.stringify(session));
@@ -87,13 +87,13 @@ export default function SpotifyPlayer() {
   }, []);
 
   const connectAccount = useCallback(async () => {
-    if (!CLIENT_ID) { setError("Spotify is not configured. Add NEXT_PUBLIC_SPOTIFY_CLIENT_ID and the matching redirect URI."); return; }
+    if (!getClientId()) { setError("Spotify is not configured. Add a Spotify Client ID in Settings and register this site URL as a redirect URI."); return; }
     if (!REDIRECT_URI) { setError("Spotify redirect URI is missing."); return; }
     const verifier = await createVerifier();
     sessionStorage.setItem(VERIFIER_KEY, verifier);
     const scopes = ["streaming","user-read-email","user-read-private","user-read-playback-state","user-modify-playback-state","user-read-currently-playing"];
     const params = new URLSearchParams({
-      client_id: CLIENT_ID, response_type: "code", redirect_uri: REDIRECT_URI,
+      client_id: getClientId(), response_type: "code", redirect_uri: REDIRECT_URI,
       code_challenge_method: "S256", code_challenge: await challenge(verifier), scope: scopes.join(" "),
     });
     window.location.assign("https://accounts.spotify.com/authorize?" + params.toString());
@@ -108,12 +108,12 @@ export default function SpotifyPlayer() {
       if (authError) { setError("Spotify authorization was declined."); url.searchParams.delete("error"); window.history.replaceState({}, "", url); return; }
       if (!code) { setAuthorized(Boolean(readSession()?.accessToken)); return; }
       const verifier = sessionStorage.getItem(VERIFIER_KEY);
-      if (!verifier || !CLIENT_ID) { setError("Spotify sign-in could not be completed. Please connect again."); return; }
+      if (!verifier || !getClientId()) { setError("Spotify sign-in could not be completed. Please connect again."); return; }
       try {
         setBusy(true);
         const data = await tokenRequest(new URLSearchParams({
           grant_type: "authorization_code", code, redirect_uri: REDIRECT_URI,
-          client_id: CLIENT_ID, code_verifier: verifier,
+          client_id: getClientId(), code_verifier: verifier,
         }));
         sessionStorage.setItem(AUTH_KEY, JSON.stringify({
           accessToken: data.access_token, refreshToken: data.refresh_token,
@@ -131,7 +131,7 @@ export default function SpotifyPlayer() {
   }, []);
 
   useEffect(() => {
-    if (!authorized || !CLIENT_ID) return;
+    if (!authorized || !getClientId()) return;
     let disposed = false;
     const init = async () => {
       try {
@@ -159,7 +159,7 @@ export default function SpotifyPlayer() {
     let active = true;
     const player = new window.Spotify.Player({
       name: "Solana Degen Radar",
-      volume: volume / 100,
+      volume: 0.65,
       getOAuthToken: async cb => { try { cb(await token()); } catch (e) { setError(e instanceof Error ? e.message : "Spotify token expired."); } },
     });
     playerRef.current = player;
@@ -177,7 +177,7 @@ export default function SpotifyPlayer() {
     player.addListener("playback_error", ({message}: {message:string}) => setError(message));
     void player.connect().then(ok => { if (!ok && active) setError("Spotify player could not connect. Check your Premium account and browser permissions."); });
     return () => { active = false; player.disconnect(); playerRef.current = null; };
-  }, [authorized, sdkReady, token, volume]);
+  }, [authorized, sdkReady, token]);
 
   const api = useCallback(async (path: string, init?: RequestInit) => {
     const accessToken = await token();
