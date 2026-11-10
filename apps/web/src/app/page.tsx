@@ -767,6 +767,14 @@ export default function Home() {
     ] },
   };
   const activeWorkspace = workspaceMeta[tab] || workspaceMeta.overview;
+  const tokenRiskFlags = tokenDetail?.risk?.flags || [];
+  const tokenRiskUnknowns = tokenDetail?.risk?.unknowns || [];
+  const mintAuthorityActive = tokenRiskFlags.some(flag => /mint authority/i.test(flag));
+  const mintAuthorityUnknown = tokenRiskUnknowns.some(item => /mint authority/i.test(item));
+  const freezeAuthorityActive = tokenRiskFlags.some(flag => /freeze authority/i.test(flag));
+  const freezeAuthorityUnknown = tokenRiskUnknowns.some(item => /freeze authority/i.test(item));
+  const whaleConcentrationKnown = inspectedToken?.top10_holder_percent != null;
+  const whaleConcentrationHigh = whaleConcentrationKnown && Number(inspectedToken?.top10_holder_percent) > 40;
 
   const navSections = [
     {
@@ -1165,7 +1173,7 @@ export default function Home() {
                   </div>
                   <div>
                     <span className="muted small">Reputation Score</span>
-                    <strong>{walletHistoryData.wallet?.reputation_score ?? 50}/100</strong>
+                    <strong>{walletHistoryData.wallet?.reputation_score ?? "—"}{walletHistoryData.wallet?.reputation_score != null ? "/100" : ""}</strong>
                   </div>
                   <div>
                     <span className="muted small">Cross-Tokens Traded / Held</span>
@@ -2061,7 +2069,7 @@ export default function Home() {
                 </div>
               </div>
 
-              <div className={`audit-card ${(inspectedToken.top10_holder_percent || 0) > 40 ? "flag" : "pass"}`}>
+              <div className={`audit-card ${!whaleConcentrationKnown ? "unknown" : whaleConcentrationHigh ? "flag" : "pass"}`}>
                 <strong>Whale Concentration</strong>
                 <div>
                   Top 10 hold: {inspectedToken.top10_holder_percent != null ? `${inspectedToken.top10_holder_percent.toFixed(1)}%` : "Not verified"}
@@ -2071,7 +2079,7 @@ export default function Home() {
               <div className="audit-card pass">
                 <strong>Overall Risk Heuristic</strong>
                 <div>
-                  Score: {inspectedToken.risk_score ?? "—"}/100 ({Number(inspectedToken.risk_score) >= 70 ? "HIGH" : Number(inspectedToken.risk_score) >= 40 ? "MEDIUM" : "LOW"})
+                  Score: {inspectedToken.risk_score ?? "—"}/100 ({inspectedToken.risk_score == null ? "UNKNOWN" : Number(inspectedToken.risk_score) >= 70 ? "HIGH" : Number(inspectedToken.risk_score) >= 40 ? "MEDIUM" : "LOW"})
                 </div>
               </div>
             </div>
