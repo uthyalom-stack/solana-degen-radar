@@ -1,0 +1,269 @@
+import type { Env } from "../types";
+import { SolanaRpcClient } from "./solana-rpc";
+
+const isoNow = () => new Date().toISOString();
+const makeId = () => crypto.randomUUID();
+const asText = (value: unknown) => typeof value === "string" ? value.trim() : "";
+const asObject = (value: unknown): Record<string, any> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : {};
+
+async function digest(value: string): Promise<string> {
+  const bytes = new TextEncoder().encode(value);
+  const hash = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(hash)).map(v => v.toString(16).padStart(2, "0")).join("");
+}
+
+export type DiscoveryConfidence = "confirmed" | "strong" | "weak" | "unknown";
+
+/** Persist source-attributed evidence without converting missing data into a positive signal. */
+export async function recordDiscoveryEvidence(
+  db: D1Database,
+  mint: string,
+  sourceType: string,
+  sourceId: string,
+  evidenceType: string,
+  confidence: DiscoveryConfidence,
+  payload: Record<string, unknown>,
+  observedAt = isoNow(),
+): Promise<void> {
+  if (!mint || mint.length < 32 || mint.length > 64) return;
+  const serialized = JSON.stringify(payload);
+  const evidenceHash = await digest(serialized);
+  await db.prepare(
+    `INSERT INTO discovery_candidates (mint, first_discovered_at, last_discovered_at, discovery_score, source_count, source_summary_json)
+     SELECT ?, ?, ?, 0, 0, '[]'
+     WHERE EXISTS (SELECT 1 FROM tokens WHERE mint = ?)
+     ON CONFLICT(mint) DO UPDATE SET last_discovered_at = excluded.last_discovered_at`
+  ).bind(mint, observedAt, observedAt, mint).run();
+
+  await db.prepare(
+    `INSERT OR IGNORE INTO discovery_evidence
+      (id,mint,source_type,source_id,evidence_type,confidence,observed_at,evidence_json,evidence_hash)
+     VALUES (?,?,?,?,?,?,?,?,?)`
+  ).bind(makeId(), mint, sourceType, sourceId, evidenceType, confidence, observedAt, serialized, evidenceHash).run();
+
+  const aggregate = await db.prepare(
+    `SELECT COUNT(DISTINCT source_type) AS source_count,
+      COUNT(*) AS evidence_count,
+      SUM(CASE confidence WHEN 'confirmed' THEN 4 WHEN 'strong' THEN 3 WHEN 'weak' THEN 1 ELSE 0 END) AS score
+     FROM discovery_evidence WHERE mint = ?`
+  ).bind(mint).first<{source_count:number;evidence_count:number;score:number}>();
+  const sources = await db.prepare(
+    "SELECT DISTINCT source_type FROM discovery_evidence WHERE mint = ? ORDER BY source_type"
+  ).bind(mint).all<{source_type:string}>();
+  await db.prepare(
+    "UPDATE discovery_candidates SET source_count=?, discovery_score=?, source_summary_json=? WHERE mint=?"
+  ).bind(aggregate?.source_count || 0, aggregate?.score || 0, JSON.stringify((sources.results || []).map(x => x.source_type)), mint).run();
+}
+
+async function sourceStatus(
+  db: D1Database, source: string, status: string, itemsSeen: number, error?: string, details: Record<string, unknown> = {},
+) {
+  const stamp = isoNow();
+  await db.prepare(
+    `INSERT INTO discovery_source_status (source_type,status,last_attempt_at,last_success_at,items_seen,error_message,details_json)
+     VALUES (?,?,?,?,?,?,?)
+     ON CONFLICT(source_type) DO UPDATE SET status=excluded.status,last_attempt_at=excluded.last_attempt_at,
+       last_success_at=CASE WHEN excluded.status='healthy' THEN excluded.last_success_at ELSE discovery_source_status.last_success_at END,
+       items_seen=excluded.items_seen,error_message=excluded.error_message,details_json=excluded.details_json`
+  ).bind(source, status, stamp, status === "healthy" ? stamp : null, itemsSeen, error || null, JSON.stringify(details)).run();
+}
+
+function extractUrls(value: unknown): string[] {
+  if (typeof value === "string") return value.match(/https?:\/\/[^\s"'<>]+/g) || [];
+  if (Array.isArray(value)) return value.flatMap(extractUrls);
+  if (value && typeof value === "object") return Object.values(value as Record<string, unknown>).flatMap(extractUrls);
+  return [];
+}
+
+function domainOf(url: string): string | null {
+  try { return new URL(url).hostname.toLowerCase().replace(/^www\./, ""); } catch { return null; }
+}
+
+/**
+ * Supplemental discovery: links already-collected on-chain, market, wallet and social evidence.
+ * Provider-dependent pipelines remain explicitly disabled until a real provider is configured.
+ */
+export async function runMultiSourceDiscovery(env: Env): Promise<Record<string, unknown>> {
+  const db = env.DB;
+  const summary: Record<string, number | string> = {};
+  const tokens = await db.prepare(
+    `SELECT t.mint,t.name,t.symbol,t.source,t.launchpad,t.creator_address,t.metadata_json,t.decimals,
+       s.price_usd,s.liquidity_usd,s.volume_5m_usd,s.volume_1h_usd,s.observed_at
+     FROM tokens t LEFT JOIN token_snapshots s ON s.id = (
+       SELECT s2.id FROM token_snapshots s2 WHERE s2.mint=t.mint ORDER BY s2.observed_at DESC LIMIT 1
+     )
+     ORDER BY COALESCE(s.observed_at,t.first_seen_at) DESC LIMIT 60`
+  ).all<any>();
+  const rows = tokens.results || [];
+  let evidenceCount = 0;
+  let routeChecks = 0;
+
+  // (1) Raw RPC discovery is performed by SolanaRpcClient and inserted before this pass.
+  summary.raw_rpc_candidates = await db.prepare("SELECT COUNT(*) AS n FROM tokens WHERE source='solana_rpc'").first<any>().then(x => Number(x?.n || 0));
+
+  // (2) Wallet relationships: retain graph evidence; a shared funder or co-buy is not proof of common ownership.
+  for (const token of rows) {
+    const relations = await db.prepare(
+      `SELECT wr.relationship_type,wr.confidence_score,wr.evidence_json,wr.wallet_a,wr.wallet_b
+       FROM wallet_relationships wr
+       JOIN wallet_observations wo ON (wo.wallet_address=wr.wallet_a OR wo.wallet_address=wr.wallet_b)
+       WHERE wo.mint=? LIMIT 30`
+    ).bind(token.mint).all<any>();
+    for (const rel of relations.results || []) {
+      await recordDiscoveryEvidence(db, token.mint, "wallet_graph", `${rel.wallet_a}:${rel.wallet_b}:${rel.relationship_type}`,
+        "wallet_relationship", Number(rel.confidence_score) >= 85 ? "strong" : "weak",
+        { relationshipType: rel.relationship_type, confidenceScore: rel.confidence_score, walletA: rel.wallet_a, walletB: rel.wallet_b, evidence: rel.evidence_json });
+      evidenceCount++;
+    }
+  }
+
+  // (3) Liquidity history: compare actual persisted snapshots; do not infer buyer uniqueness from pool transaction counts.
+  for (const token of rows) {
+    const history = await db.prepare(
+      "SELECT pair_address,observed_at,liquidity_usd,volume_5m_usd,volume_1h_usd,txns_5m_json FROM token_snapshots WHERE mint=? ORDER BY observed_at DESC LIMIT 2"
+    ).bind(token.mint).all<any>();
+    const latest = history.results?.[0];
+    if (!latest) continue;
+    let previous = history.results?.[1];
+    await db.prepare(
+      `INSERT INTO liquidity_observations (id,mint,pair_address,observed_at,liquidity_usd,volume_5m_usd,volume_1h_usd,raw_json)
+       VALUES (?,?,?,?,?,?,?,?)`
+    ).bind(makeId(), token.mint, latest.pair_address, latest.observed_at, latest.liquidity_usd, latest.volume_5m_usd, latest.volume_1h_usd,
+      JSON.stringify({ previous: previous || null, source: "token_snapshots" })).run();
+    const oldLiquidity = Number(previous?.liquidity_usd);
+    const currentLiquidity = Number(latest.liquidity_usd);
+    if (Number.isFinite(oldLiquidity) && oldLiquidity > 0 && Number.isFinite(currentLiquidity)) {
+      const growthPct = ((currentLiquidity - oldLiquidity) / oldLiquidity) * 100;
+      await recordDiscoveryEvidence(db, token.mint, "liquidity", latest.pair_address || "unknown-pool",
+        "liquidity_change", "weak", { previousLiquidityUsd: oldLiquidity, currentLiquidityUsd: currentLiquidity, growthPct, observedAt: latest.observed_at }, latest.observed_at);
+      evidenceCount++;
+    }
+  }
+
+  // (4) Narrative-before-token matching: match token aliases against previously captured public social events.
+  for (const token of rows) {
+    const terms = [asText(token.symbol), asText(token.name)].filter(x => x.length >= 4).slice(0, 2);
+    for (const term of terms) {
+      const mentions = await db.prepare(
+        "SELECT source,source_id,observed_at,url,text_content,metrics_json FROM social_events WHERE lower(text_content) LIKE ? ORDER BY observed_at DESC LIMIT 8"
+      ).bind(`%${term.toLowerCase()}%`).all<any>();
+      for (const mention of mentions.results || []) {
+        await recordDiscoveryEvidence(db, token.mint, "social_narrative", `${mention.source}:${mention.source_id}`,
+          "token_alias_mention", "weak", { matchedTerm: term, source: mention.source, url: mention.url, text: String(mention.text_content || "").slice(0, 500), metrics: mention.metrics_json }, mention.observed_at);
+        evidenceCount++;
+      }
+    }
+  }
+
+  // (5) Launchpad and graduation observations from actual PumpPortal events and persisted token attribution.
+  for (const token of rows) {
+    const events = await db.prepare(
+      "SELECT event_type,observed_at,raw_json FROM pumpportal_events WHERE mint=? ORDER BY observed_at DESC LIMIT 10"
+    ).bind(token.mint).all<any>();
+    for (const event of events.results || []) {
+      await db.prepare(
+        `INSERT OR IGNORE INTO launchpad_observations (id,mint,launchpad,event_type,observed_at,evidence_json)
+         VALUES (?,?,?,?,?,?)`
+      ).bind(makeId(), token.mint, token.launchpad || "pumpfun", event.event_type, event.observed_at, event.raw_json || "{}").run();
+      await recordDiscoveryEvidence(db, token.mint, "launchpad", `pumpportal:${event.event_type}:${event.observed_at}`,
+        "launchpad_event", "confirmed", { launchpad: token.launchpad || "pumpfun", eventType: event.event_type, raw: event.raw_json }, event.observed_at);
+      evidenceCount++;
+    }
+    if (token.launchpad) {
+      await recordDiscoveryEvidence(db, token.mint, "launchpad", token.launchpad, "launchpad_attribution", "weak",
+        { launchpad: token.launchpad, migrationTarget: null, attributionSource: token.source });
+    }
+  }
+
+  // (6) Bundle analysis is not fabricated from ordinary transaction ordering.
+  // A configured Jito/block-engine feed is required to identify bundle membership with confidence.
+  await sourceStatus(db, "jito_bundle", "disabled", 0, "No authenticated bundle/indexer feed is configured; Jito tip transfers alone are not proof of bundle membership.");
+
+  // (7) Cross-chain bridge flow requires Wormhole/deBridge message/indexer data; do not guess from ordinary SOL transfers.
+  await sourceStatus(db, "cross_chain_flows", "disabled", 0, "No bridge message/indexer provider is configured.");
+
+  // (8) Route discovery: test small, bounded set of actual mint->SOL quotes; quote availability is not proof of execution.
+  const rpc = new SolanaRpcClient(env);
+  for (const token of rows.slice(0, 8)) {
+    try {
+      let decimals = Number(token.decimals);
+      if (!Number.isInteger(decimals) || decimals < 0 || decimals > 18) {
+        const security = await rpc.getMintSecurity(token.mint);
+        decimals = security.decimals ?? -1;
+      }
+      if (decimals < 0 || decimals > 18) continue;
+      const rawAmount = String(Math.max(1, Math.floor(10 ** Math.min(decimals, 9))));
+      const quoteUrl = `https://quote-api.jup.ag/v6/quote?inputMint=${encodeURIComponent(token.mint)}&outputMint=So11111111111111111111111111111111111111112&amount=${rawAmount}&slippageBps=300`;
+      const response = await fetch(quoteUrl, { headers: { Accept: "application/json" } });
+      const body = await response.text();
+      let parsed: any = null;
+      try { parsed = body ? JSON.parse(body) : null; } catch { parsed = null; }
+      const routeAvailable = response.ok && Boolean(parsed?.outAmount && Number(parsed.outAmount) > 0);
+      await db.prepare(
+        `INSERT INTO route_observations (id,mint,provider,observed_at,route_available,input_amount_raw,output_amount_raw,price_impact_pct,route_plan_json,error_code)
+         VALUES (?,?,?,?,?,?,?,?,?,?)`
+      ).bind(makeId(), token.mint, "jupiter", isoNow(), routeAvailable ? 1 : 0, rawAmount,
+        parsed?.outAmount || null, Number.isFinite(Number(parsed?.priceImpactPct)) ? Number(parsed.priceImpactPct) : null,
+        parsed?.routePlan ? JSON.stringify(parsed.routePlan) : null, response.ok ? null : `HTTP_${response.status}`).run();
+      await recordDiscoveryEvidence(db, token.mint, "trading_route", "jupiter", "quote_route",
+        routeAvailable ? "strong" : "unknown", { routeAvailable, httpStatus: response.status, error: parsed?.error || null });
+      routeChecks++;
+    } catch {
+      // A provider/network failure is unknown, not a honeypot result.
+    }
+  }
+
+  // (9) Exact metadata URL reuse is a weak duplicate-artwork clue, not perceptual image recognition.
+  // A true pHash/embedding provider is deliberately not claimed until one is implemented.
+  for (const token of rows) {
+    let metadata: Record<string, any> = {};
+    try { metadata = asObject(JSON.parse(token.metadata_json || "{}")); } catch { metadata = {}; }
+    const imageUrl = asText(metadata.image || metadata.image_uri || metadata.logoURI || metadata.logo_uri);
+    if (imageUrl.startsWith("https://") || imageUrl.startsWith("http://")) {
+      const normalized = imageUrl.split("?")[0].toLowerCase();
+      const urlHash = await digest(normalized);
+      await db.prepare(
+        `INSERT OR IGNORE INTO token_media_fingerprints (id,mint,media_url,normalized_url_hash,method,observed_at)
+         VALUES (?,?,?,?,?,?)`
+      ).bind(makeId(), token.mint, imageUrl, urlHash, "normalized_url_exact_match", isoNow()).run();
+      const duplicates = await db.prepare(
+        "SELECT mint FROM token_media_fingerprints WHERE normalized_url_hash=? AND mint<>? LIMIT 20"
+      ).bind(urlHash, token.mint).all<any>();
+      if (duplicates.results?.length) {
+        await recordDiscoveryEvidence(db, token.mint, "media_similarity", urlHash, "reused_image_url", "weak",
+          { matchingMints: duplicates.results.map(x => x.mint), method: "exact_normalized_url_only" });
+      }
+    }
+  }
+  await sourceStatus(db, "image_similarity", "partial", 0, "Exact metadata image URL reuse is tracked. Perceptual hashing and visual embeddings are not yet implemented.");
+
+  // (10) Developer/domain/community signals extracted from token metadata and known creator attribution.
+  for (const token of rows) {
+    let metadata: Record<string, any> = {};
+    try { metadata = asObject(JSON.parse(token.metadata_json || "{}")); } catch { metadata = {}; }
+    const urls = [...new Set(extractUrls(metadata))].slice(0, 20);
+    for (const url of urls) {
+      const domain = domainOf(url);
+      const signalType = /github\.com/i.test(url) ? "github" : /t\.me|telegram\.me/i.test(url) ? "telegram" : /x\.com|twitter\.com/i.test(url) ? "social" : "website";
+      await db.prepare(
+        `INSERT OR IGNORE INTO developer_signals (id,mint,signal_type,signal_value,domain,observed_at,confidence,evidence_json)
+         VALUES (?,?,?,?,?,?,?,?)`
+      ).bind(makeId(), token.mint, signalType, url, domain, isoNow(), "weak", JSON.stringify({ extractedFrom: "token_metadata" })).run();
+      await recordDiscoveryEvidence(db, token.mint, "developer_community", url, "metadata_link", "weak", { signalType, url, domain });
+    }
+    if (token.creator_address) {
+      await recordDiscoveryEvidence(db, token.mint, "developer_community", token.creator_address,
+        "creator_attribution", "weak", { creatorAddress: token.creator_address, attributionSource: "tokens.creator_address" });
+    }
+  }
+
+  summary.tokens_examined = rows.length;
+  summary.evidence_written = evidenceCount;
+  summary.jupiter_route_checks = routeChecks;
+  await sourceStatus(db, "wallet_graph", "partial", evidenceCount, undefined, { pipeline: "persisted wallet relationship evidence; upstream wallet history completeness remains dependent on RPC ingestion" });
+  await sourceStatus(db, "liquidity", "partial", rows.length, undefined, { pipeline: "historical token snapshots; independent buyer counts not inferred" });
+  await sourceStatus(db, "social_narrative", "partial", evidenceCount, undefined, { pipeline: "matches existing social events; narrative-before-token trend detection needs broader social sources" });
+  await sourceStatus(db, "launchpad", "partial", rows.length, undefined, { pipeline: "PumpPortal events and persisted launchpad attribution" });
+  await sourceStatus(db, "trading_route", "healthy", routeChecks, undefined, { provider: "Jupiter quote API", note: "quote availability is not execution proof" });
+  return summary;
+}
