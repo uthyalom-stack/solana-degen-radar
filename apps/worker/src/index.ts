@@ -852,6 +852,14 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
       });
     }
 
+    // Emerging social terms surfaced before a matching token is known.
+    if (path === "/api/discovery/narratives" && method === "GET") {
+      const rows = await env.DB.prepare(
+        "SELECT normalized_term,display_term,term_type,first_seen_at,last_seen_at,mention_count,independent_source_count,engagement_total,evidence_json FROM emerging_narratives ORDER BY independent_source_count DESC,mention_count DESC,last_seen_at DESC LIMIT 100"
+      ).all<any>();
+      return json(rows.results || []);
+    }
+
     // Multi-source discovery registry and transparent source health.
     if (path === "/api/discovery/candidates" && method === "GET") {
       const limit = Math.min(200, Math.max(1, Number(url.searchParams.get("limit")) || 60));
