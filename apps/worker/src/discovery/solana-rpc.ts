@@ -390,6 +390,56 @@ export class SolanaRpcClient {
     }
   }
 
+  /**
+   * Discover fresh SPL Token / Token-2022 mint initializations directly from program history.
+   * This is a bounded recent-signature poll, not a substitute for a paid streaming/indexing feed.
+   */
+  async discoverRecentMintInitializations(limit = 8): Promise<Array<{
+    mint: string; signature: string; slot: number | null; blockTime: number | null;
+    decimals: number | null; mintAuthority: string | null; tokenProgram: string;
+  }>> {
+    const programs = [
+      { id: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", name: "Tokenkeg" },
+      { id: "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", name: "Token-2022" },
+    ];
+    const found = new Map<string, {
+      mint: string; signature: string; slot: number | null; blockTime: number | null;
+      decimals: number | null; mintAuthority: string | null; tokenProgram: string;
+    }>();
+    for (const program of programs) {
+      const signatures = await this.rpcCall<Array<{ signature: string; slot: number; blockTime: number | null }>>(
+        "getSignaturesForAddress", [program.id, { limit: Math.max(1, Math.min(limit, 20)), commitment: "confirmed" }]
+      );
+      for (const entry of signatures || []) {
+        const tx = await this.rpcCall<any>("getTransaction", [
+          entry.signature, { encoding: "jsonParsed", maxSupportedTransactionVersion: 0, commitment: "confirmed" }
+        ]);
+        const instructions: any[] = [
+          ...(tx?.transaction?.message?.instructions || []),
+          ...((tx?.meta?.innerInstructions || []).flatMap((group: any) => group.instructions || [])),
+        ];
+        for (const instruction of instructions) {
+          const parsed = instruction?.parsed;
+          const type = String(parsed?.type || "").toLowerCase();
+          if (!["initializemint", "initializemint2"].includes(type)) continue;
+          const info = parsed?.info || {};
+          const mint = typeof info.mint === "string" ? info.mint : "";
+          if (!mint || mint.length < 32 || mint.length > 64) continue;
+          found.set(mint, {
+            mint,
+            signature: entry.signature,
+            slot: Number.isFinite(Number(entry.slot)) ? Number(entry.slot) : null,
+            blockTime: entry.blockTime ?? null,
+            decimals: Number.isInteger(Number(info.decimals)) ? Number(info.decimals) : null,
+            mintAuthority: typeof info.mintAuthority === "string" ? info.mintAuthority : null,
+            tokenProgram: program.name,
+          });
+        }
+      }
+    }
+    return Array.from(found.values());
+  }
+
   async checkHealth(): Promise<ProviderHealth> {
     const startTime = Date.now();
     try {
