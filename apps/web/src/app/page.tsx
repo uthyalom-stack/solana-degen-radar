@@ -1951,7 +1951,7 @@ export default function Home() {
                 </div>
                 <div style={{ marginTop: 12, fontSize: 12 }}>
                   <p className="muted tiny" style={{ margin: "0 0 8px 0" }}>
-                    Connect your Spotify account to search tracks and control playback from this terminal. Requires Spotify Premium, a registered redirect URL, and the written commercial approval you confirmed.
+                    Connect your Spotify account to search tracks and control playback from this terminal. Requires an eligible Spotify Premium account and a registered redirect URL. Commercial playback is subject to Spotify's developer approval and terms.
                   </p>
                   <label style={{ fontSize: 11, color: "#8b99ac", display: "block" }}>
                     Spotify Developer Client ID:
