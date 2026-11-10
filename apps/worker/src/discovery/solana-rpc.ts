@@ -450,6 +450,29 @@ export class SolanaRpcClient {
     return Array.from(found.values());
   }
 
+  /** Poll configured launchpad/AMM program accounts for recent transactions involving tracked mints. */
+  async getRecentProgramTransactions(programIds: string[], limit = 5): Promise<Array<{
+    programId: string; signature: string; slot: number | null; blockTime: number | null; accountKeys: string[];
+  }>> {
+    const output: Array<{programId:string;signature:string;slot:number|null;blockTime:number|null;accountKeys:string[]}> = [];
+    for (const programId of programIds.slice(0, 12)) {
+      const signatures = await this.rpcCall<Array<{signature:string;slot:number;blockTime:number|null}>>(
+        "getSignaturesForAddress",[programId,{limit:Math.max(1,Math.min(limit,10)),commitment:"confirmed"}]
+      );
+      for (const item of signatures || []) {
+        const tx = await this.rpcCall<any>("getTransaction",[
+          item.signature,{encoding:"jsonParsed",maxSupportedTransactionVersion:0,commitment:"confirmed"}
+        ]);
+        const keys = (tx?.transaction?.message?.accountKeys || [])
+          .map((key:any)=>typeof key==="string"?key:key?.pubkey)
+          .filter((value:any):value is string=>typeof value==="string");
+        output.push({programId,signature:item.signature,slot:Number.isFinite(Number(item.slot))?Number(item.slot):null,
+          blockTime:item.blockTime??null,accountKeys:keys});
+      }
+    }
+    return output;
+  }
+
   async checkHealth(): Promise<ProviderHealth> {
     const startTime = Date.now();
     try {
