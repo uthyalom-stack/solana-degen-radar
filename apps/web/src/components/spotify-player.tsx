@@ -245,8 +245,18 @@ export default function SpotifyPlayer() {
   const seek = async (value: number) => { setPosition(value); try { await playerRef.current?.seek(value); } catch {} };
 
   return (
-    <>
+    <div className="spotify-player-shell">
+      <button type="button" className="spotify-mobile-island" onClick={() => setExpanded(v => !v)} aria-label={expanded ? "Collapse Spotify player" : "Expand Spotify player"}>
+        <span className="spotify-live-dot" />
+        <span className="spotify-mobile-track">
+          <strong>{track?.name || "Spotify"}</strong>
+          <small>{track ? track.artists.map(a => a.name).join(", ") : connected ? "Ready to play" : "Your music, in the terminal"}</small>
+        </span>
+        <span className="spotify-mobile-state">{playing ? "NOW PLAYING" : "PLAYER"}</span>
+        <span className="spotify-mobile-chevron">{expanded ? "⌃" : "⌄"}</span>
+      </button>
       <section className={`spotify-player ${expanded ? "expanded" : ""}`} aria-label="Spotify music player">
+
         <div className="spotify-player-bar">
           <div className="spotify-art">{track?.album.images?.[0]?.url ? <img src={track.album.images[0].url} alt="" /> : <span>♫</span>}</div>
           <div className="spotify-now-playing">
@@ -274,8 +284,7 @@ export default function SpotifyPlayer() {
             {!authorized && <p className="spotify-hint">Connect your Spotify Premium account to search and control playback here. Spotify approval and a registered redirect URI are required for this commercial product.</p>}
           </div>
         )}
+      </section> 
       </section>
-      <button type="button" className="spotify-mobile-island" onClick={()=>setExpanded(v=>!v)} aria-label="Toggle Spotify player"><span className="spotify-live-dot"/><span>{track?.name || "Spotify"}</span><span>{playing?"Ⅱ":"♫"}</span></button>
-    </>
-  );
+    </div>
 }
