@@ -951,6 +951,7 @@ export default function Home() {
         </header>
 
         <main className="content-body">
+          <SpotifyPlayer />
           <section className={`page-intro ${tab === "overview" ? "overview-hero" : "workspace-hero"}`}>
             <div className="page-intro-copy">
               <div className="page-eyebrow"><span className="radar-dot" /> {tab === "overview" ? "DEGEN RADAR / COMMAND CENTRE" : "MARKET INTELLIGENCE / WORKSPACE"}</div>
@@ -2275,8 +2276,6 @@ export default function Home() {
           </footer>
         </main>
       </div>
-
-      <SpotifyPlayer />
 
       {/* Mobile Bottom Navigation Bar */}
       <nav className="mobile-nav-bar">
