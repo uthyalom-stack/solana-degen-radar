@@ -688,6 +688,81 @@ export default function Home() {
   const cash = portfolio?.cash_balance ?? overview?.portfolio?.cash_balance ?? 100;
   const equity = portfolio?.total_equity_usd ?? overview?.portfolio?.total_equity_usd ?? cash;
 
+  const workspaceMeta: Record<string, { eyebrow: string; title: string; description: string; metrics: Array<{ label: string; value: string; detail: string }> }> = {
+    overview: { eyebrow: "COMMAND CENTRE", title: "Market discovery", description: "A consolidated view of newly observed Solana assets, market momentum and risk signals.", metrics: [
+      { label: "Tracked assets", value: String(tokens.length), detail: "Observed token mints" },
+      { label: "Active narratives", value: String(narratives.length), detail: "Tracked social themes" },
+      { label: "Open signals", value: String(breakoutSignals.length), detail: "Breakout detections" },
+      { label: "Portfolio equity", value: money(equity), detail: "Current selected mode" },
+    ] },
+    launches: { eyebrow: "DISCOVERY / NEW PAIRS", title: "New launch monitor", description: "Review newly discovered mints, liquidity, venue and early risk evidence before considering an entry.", metrics: [
+      { label: "Observed launches", value: String(tokens.filter(t => t.launchpad).length), detail: "With venue attribution" },
+      { label: "High risk", value: String(tokens.filter(t => Number(t.risk_score) >= 70).length), detail: "Risk score ≥ 70" },
+      { label: "Unknown risk", value: String(tokens.filter(t => t.risk_status === "partial" || t.risk_score == null).length), detail: "Incomplete evidence" },
+    ] },
+    trending: { eyebrow: "DISCOVERY / MOMENTUM", title: "Trending token monitor", description: "Sort the observed market by momentum and inspect whether activity is supported by liquidity and risk evidence.", metrics: [
+      { label: "Tracked assets", value: String(tokens.length), detail: "Current token set" },
+      { label: "Strong momentum", value: String(tokens.filter(t => Number(t.momentum_score) >= 70).length), detail: "Momentum score ≥ 70" },
+      { label: "High risk", value: String(tokens.filter(t => Number(t.risk_score) >= 70).length), detail: "Keep risk in view" },
+    ] },
+    breakouts: { eyebrow: "INTELLIGENCE / BREAKOUTS", title: "Breakout signal desk", description: "Inspect detected acceleration signals alongside their confidence, momentum and supporting evidence.", metrics: [
+      { label: "Active signals", value: String(breakoutSignals.length), detail: "Returned by Radar API" },
+      { label: "High confidence", value: String(breakoutSignals.filter(s => Number(s.confidence) >= 70).length), detail: "Confidence ≥ 70" },
+      { label: "Tracked assets", value: String(tokens.length), detail: "Market context" },
+    ] },
+    narratives: { eyebrow: "INTELLIGENCE / SOCIAL", title: "Narrative intelligence", description: "Follow social observations and narrative momentum. Source coverage depends on configured integrations.", metrics: [
+      { label: "Narratives", value: String(narratives.length), detail: "Known narrative records" },
+      { label: "Social observations", value: String(socialEvents.length), detail: "Events returned by API" },
+      { label: "Sources represented", value: String(new Set(socialEvents.map(e => e.source)).size), detail: "Distinct source labels" },
+    ] },
+    wallets: { eyebrow: "INTELLIGENCE / WALLET GRAPH", title: "Wallet investigation desk", description: "Investigate public addresses and inspect historical token involvement. Shared activity is an indicator, not proof of coordination.", metrics: [
+      { label: "Wallet queried", value: walletHistoryData?.wallet ? "Loaded" : "—", detail: "Current investigation" },
+      { label: "Tokens involved", value: String(walletHistoryData?.tokensInvolved?.length || 0), detail: "Returned history" },
+      { label: "Relationships", value: String(walletHistoryData?.relationships?.length || 0), detail: "Returned links" },
+    ] },
+    risk: { eyebrow: "INTELLIGENCE / SECURITY", title: "Token risk review", description: "Prioritise verified evidence, explicit unknowns and sellability limitations. A missing check is not a clean bill of health.", metrics: [
+      { label: "High risk", value: String(tokens.filter(t => Number(t.risk_score) >= 70).length), detail: "Risk score ≥ 70" },
+      { label: "Partial assessments", value: String(tokens.filter(t => t.risk_status === "partial").length), detail: "Evidence incomplete" },
+      { label: "Tokens reviewed", value: String(tokens.length), detail: "Current token set" },
+    ] },
+    paper: { eyebrow: "EXECUTION / SIMULATION", title: "Paper trading terminal", description: "Practice with virtual funds and observed market prices. Simulation results are not live trading performance.", metrics: [
+      { label: "Virtual equity", value: money(equity), detail: "Current simulation value" },
+      { label: "Open positions", value: String(portfolio?.positions?.filter(p => p.status === "open").length || 0), detail: "Current paper positions" },
+      { label: "Recorded trades", value: String(portfolio?.total_trades || 0), detail: "Current portfolio history" },
+    ] },
+    live_swap: { eyebrow: "EXECUTION / PHANTOM", title: "Non-custodial swap terminal", description: "Review quotes and transaction details before signing in Phantom. Nothing is sent until you approve it in your wallet.", metrics: [
+      { label: "Wallet", value: phantomAddress ? "Connected" : "Not connected", detail: "Phantom session" },
+      { label: "SOL balance", value: solBalance == null ? "—" : solBalance.toFixed(4), detail: "Confirmed wallet balance" },
+      { label: "Quote", value: liveQuote ? "Available" : "Not requested", detail: "Current quote state" },
+    ] },
+    portfolio: { eyebrow: "ANALYTICS / PERFORMANCE", title: "Portfolio analytics", description: "Review portfolio equity, realised and unrealised performance, positions and execution history.", metrics: [
+      { label: "Equity", value: money(equity), detail: "Current portfolio value" },
+      { label: "Realised PnL", value: money(portfolio?.realized_pnl_usd), detail: "Closed trade result" },
+      { label: "Win rate", value: portfolio ? `${Number(portfolio.win_rate_pct).toFixed(1)}%` : "—", detail: "Recorded outcomes" },
+    ] },
+    alerts: { eyebrow: "INTELLIGENCE / ALERTS", title: "Security alert centre", description: "Review risk and system alerts with severity, timestamps and delivery status.", metrics: [
+      { label: "Total alerts", value: String(alerts.length), detail: "Returned alert records" },
+      { label: "Critical", value: String(alerts.filter(a => a.severity === "critical").length), detail: "Highest severity" },
+      { label: "Warnings", value: String(alerts.filter(a => a.severity === "warning").length), detail: "Require review" },
+    ] },
+    backtesting: { eyebrow: "ANALYTICS / VALIDATION", title: "Strategy research lab", description: "Evaluate strategies against recorded historical snapshots. Results depend on data coverage and must not be treated as a forecast.", metrics: [
+      { label: "Backtest runs", value: String(backtestRuns.length), detail: "Stored strategy runs" },
+      { label: "Historical trades", value: String(backtestRuns.reduce((n, r) => n + Number(r.total_trades || 0), 0)), detail: "Across returned runs" },
+      { label: "Data coverage", value: backtestRuns.length ? "Available" : "Not yet run", detail: "Historical result set" },
+    ] },
+    providers: { eyebrow: "SYSTEM / CONNECTIVITY", title: "Provider operations", description: "Check configured data providers and their reported health. Unconfigured or unknown providers are not considered healthy.", metrics: [
+      { label: "Providers", value: String(providersHealth.length), detail: "Returned provider records" },
+      { label: "Healthy", value: String(providersHealth.filter(p => p.status === "healthy").length), detail: "Reported healthy" },
+      { label: "Degraded / down", value: String(providersHealth.filter(p => p.status !== "healthy").length), detail: "Needs attention" },
+    ] },
+    settings: { eyebrow: "SYSTEM / CONFIGURATION", title: "Terminal administration", description: "Review runtime configuration and integration diagnostics. Secret values must never be displayed in the browser.", metrics: [
+      { label: "API endpoint", value: API ? "Configured" : "Missing", detail: "Frontend build setting" },
+      { label: "Diagnostics", value: envStatusData ? "Loaded" : "Not checked", detail: "Worker environment status" },
+      { label: "Spotify", value: spotifyClientId ? "Client ID set" : "Not configured", detail: "Browser playback setup" },
+    ] },
+  };
+  const activeWorkspace = workspaceMeta[tab] || workspaceMeta.overview;
+
   const navSections = [
     {
       title: "Discovery & Radar",
@@ -755,7 +830,7 @@ export default function Home() {
                   key={item.id}
                   className={`nav-item ${tab === item.id ? "active" : ""}`}
                   title={item.label}
-                  onClick={() => setTab(item.id as any)}
+                  onClick={() => { setTab(item.id as any); setMobileOpen(false); }}
                 >
                   <span className="nav-icon">{item.icon}</span>
                   {!sidebarCollapsed && <span>{item.label}</span>}
@@ -772,7 +847,7 @@ export default function Home() {
           <div className="sidebar-footer">
             <div className="status-indicator">
               <span className="radar-dot" />
-              <span>Solana Mainnet: Operational</span>
+              <span>{API ? "Radar API: configured" : "Radar API: offline"}</span>
             </div>
           </div>
         )}
@@ -908,7 +983,8 @@ export default function Home() {
 
           {/* Main Terminal Workspace */}
           <section className={`panel section terminal-workspace tab-${tab}`}>
-        <div className="workspace-topline"><div><span className="workspace-kicker">WORKSPACE / {tab.replaceAll("_"," ").toUpperCase()}</span><h2>{tab === "overview" ? "Market discovery" : navSections.flatMap(group => group.items).find(item => item.id === tab)?.label || "Intelligence workspace"}</h2></div><div className="workspace-meta"><span className="workspace-live-dot"/>{tokens.length} ASSETS INDEXED</div></div>
+        <div className="workspace-topline"><div><span className="workspace-kicker">{activeWorkspace.eyebrow}</span><h2>{activeWorkspace.title}</h2><p className="workspace-description">{activeWorkspace.description}</p></div><div className="workspace-meta"><span className="workspace-live-dot"/>{API ? "API CONFIGURED" : "API OFFLINE"}</div></div>
+        <div className="workspace-metrics">{activeWorkspace.metrics.map((metric, index) => <article className="workspace-metric-card" key={metric.label}><span>{metric.label}</span><strong>{metric.value}</strong><small>{metric.detail}</small><i className={`metric-accent metric-accent-${index % 3}`}/></article>)}</div>
 
         {/* SECTION 1: RADAR OVERVIEW FEED */}
         {(tab === "overview" || tab === "launches" || tab === "trending") && (
