@@ -360,6 +360,26 @@ async function runMarketScan(env: Env) {
           )
           .run();
 
+        // Detect Pump.fun graduation once the same mint appears in a downstream DEX pool.
+        const dexLabel = String(pair.dexId || "").toLowerCase();
+        const downstreamDex = dexLabel.includes("raydium") ? "raydium" : dexLabel.includes("meteora") ? "meteora" : null;
+        if (downstreamDex) {
+          const pumpLaunch = await env.DB.prepare(
+            "SELECT 1 AS found FROM pumpportal_events WHERE mint=? AND lower(event_type) LIKE '%create%' LIMIT 1"
+          ).bind(mint).first<any>();
+          if (pumpLaunch) {
+            await env.DB.prepare("UPDATE tokens SET is_migrated=1,migration_target=? WHERE mint=?")
+              .bind(downstreamDex,mint).run();
+            await env.DB.prepare(
+              `INSERT OR IGNORE INTO launchpad_observations (id,mint,launchpad,event_type,observed_at,migration_target,signature,evidence_json)
+               VALUES (?,?,?,?,?,?,?,?)`
+            ).bind(id(),mint,"pumpfun","graduated_migration",observed,downstreamDex,pair.pairAddress || null,
+              JSON.stringify({downstreamDex,pairAddress:pair.pairAddress,dexId:pair.dexId,source:"DEX Screener pool plus PumpPortal create event"})).run();
+            await recordDiscoveryEvidence(env.DB,mint,"launchpad_migration",pair.pairAddress || downstreamDex,
+              "pumpfun_graduation","strong",{from:"pumpfun",to:downstreamDex,pairAddress:pair.pairAddress,dexId:pair.dexId},observed);
+          }
+        }
+
         // Preserve independent discovery evidence for DEX profile/boost and newly observed pool liquidity.
         if ((profileMints as string[]).includes(mint)) {
           await recordDiscoveryEvidence(env.DB,mint,"dexscreener","latest_token_profile","token_profile","confirmed",{source:"DEX Screener latest token profile"},observed);
