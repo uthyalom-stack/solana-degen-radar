@@ -63,7 +63,7 @@ async function sourceStatus(
     `INSERT INTO discovery_source_status (source_type,status,last_attempt_at,last_success_at,items_seen,error_message,details_json)
      VALUES (?,?,?,?,?,?,?)
      ON CONFLICT(source_type) DO UPDATE SET status=excluded.status,last_attempt_at=excluded.last_attempt_at,
-       last_success_at=CASE WHEN excluded.status='healthy' THEN excluded.last_success_at ELSE discovery_source_status.last_success_at END,
+       last_success_at=CASE WHEN excluded.status IN ('healthy','partial') THEN excluded.last_success_at ELSE discovery_source_status.last_success_at END,
        items_seen=excluded.items_seen,error_message=excluded.error_message,details_json=excluded.details_json`
   ).bind(source, status, stamp, status === "healthy" ? stamp : null, itemsSeen, error || null, JSON.stringify(details)).run();
 }
