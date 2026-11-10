@@ -841,12 +841,14 @@ export default function Home() {
         </header>
 
         <main className="content-body">
-          <section className="page-intro">
+          <section className={`page-intro ${tab === "overview" ? "overview-hero" : "workspace-hero"}`}>
             <div className="page-intro-copy">
-              <div className="page-eyebrow"><span className="radar-dot" /> SOLANA INTELLIGENCE TERMINAL</div>
-              <h1>{navSections.flatMap(group => group.items).find(item => item.id === tab)?.label || "Overview Feed"}</h1>
-              <p>Discover emerging launches, validate on-chain risk, follow wallet behaviour and manage your simulation from one command centre.</p>
+              <div className="page-eyebrow"><span className="radar-dot" /> {tab === "overview" ? "DEGEN RADAR / COMMAND CENTRE" : "MARKET INTELLIGENCE / WORKSPACE"}</div>
+              <h1>{tab === "overview" ? <>See the signal.<br/><span>Move before the crowd.</span></> : navSections.flatMap(group => group.items).find(item => item.id === tab)?.label || "Solana Terminal"}</h1>
+              <p>{tab === "overview" ? "A live intelligence workspace for discovering early launches, measuring momentum, tracing wallet behaviour and managing risk across Solana." : `Focused workspace for ${navSections.flatMap(group => group.items).find(item => item.id === tab)?.label?.toLowerCase() || "market intelligence"}. Review evidence, inspect signals and take action with clear risk context.`}</p>
+              <div className="hero-capabilities"><span>ON-CHAIN SIGNALS</span><i/><span>WALLET INTELLIGENCE</span><i/><span>RISK-FIRST EXECUTION</span></div>
             </div>
+            <div className="hero-radar-visual" aria-hidden="true"><div className="radar-ring ring-one"/><div className="radar-ring ring-two"/><div className="radar-ring ring-three"/><div className="radar-crosshair"/><div className="radar-sweep"/><span className="radar-center-dot"/><span className="radar-point point-a"/><span className="radar-point point-b"/><span className="radar-point point-c"/><div className="radar-readout"><b>{API ? "API CONFIGURED" : "LOCAL / OFFLINE"}</b><small>RADAR CORE · SOLANA</small></div></div>
             <div className="page-intro-status">
               <span className="status-pulse" />
               <div><strong>{API ? "API endpoint configured" : "API connection required"}</strong><small>{API ? "Waiting for live service response" : "Connect the Cloudflare Worker to load live data"}</small></div>
@@ -860,23 +862,23 @@ export default function Home() {
           )}
           {message && <div className="notice success">{message}</div>}
 
-          {/* Top Summary Metrics */}
-          <section className="grid">
+          {/* Overview command metrics */}
+          {tab === "overview" && <section className="grid overview-metrics">
             <article className="panel">
               <div className="muted small">Tracked Solana Tokens</div>
-              <div className="metric">{overview?.counts.tokens ?? tokens.length}</div>
+              <div className="metric">{overview?.counts.tokens ?? tokens.length}</div><div className="metric-sparkline" aria-hidden="true"><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/></div>
               <div className="muted small">Deduplicated on-chain mints</div>
             </article>
 
             <article className="panel">
               <div className="muted small">Active Meme Narratives</div>
-              <div className="metric">{overview?.counts.narratives ?? narratives.length}</div>
+              <div className="metric">{overview?.counts.narratives ?? narratives.length}</div><div className="metric-caption">Narrative velocity <b>TRACKING</b></div>
               <div className="muted small">Multi-platform viral tracking</div>
             </article>
 
             <article className="panel">
               <div className="muted small">Breakouts & Alerts Today</div>
-              <div className="metric">{breakoutSignals.length + alerts.length}</div>
+              <div className="metric">{breakoutSignals.length + alerts.length}</div><div className="metric-caption">Signal feed <b>LIVE MONITOR</b></div>
               <div className="muted small">{breakoutSignals.length} breakouts · {alerts.length} risk alerts</div>
             </article>
 
@@ -897,15 +899,16 @@ export default function Home() {
                   : "Mainnet-Beta Non-Custodial"}
               </div>
             </article>
-          </section>
+          </section>}
 
           {/* Main Terminal Workspace */}
-          <section className="panel section">
+          <section className={`panel section terminal-workspace tab-${tab}`}>
+        <div className="workspace-topline"><div><span className="workspace-kicker">WORKSPACE / {tab.replaceAll("_"," ").toUpperCase()}</span><h2>{tab === "overview" ? "Market discovery" : navSections.flatMap(group => group.items).find(item => item.id === tab)?.label || "Intelligence workspace"}</h2></div><div className="workspace-meta"><span className="workspace-live-dot"/>{tokens.length} ASSETS INDEXED</div></div>
 
         {/* SECTION 1: RADAR OVERVIEW FEED */}
         {(tab === "overview" || tab === "launches" || tab === "trending") && (
           <div>
-            <div className="filter-bar">
+            <div className="filter-bar discovery-filter-bar">
               <input
                 placeholder="Search symbol, name, or mint address…"
                 value={search}
@@ -937,7 +940,7 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="table-wrap">
+            <div className="table-wrap discovery-table-wrap">
               <table>
                 <thead>
                   <tr>
