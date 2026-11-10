@@ -260,10 +260,12 @@ export async function runMultiSourceDiscovery(env: Env): Promise<Record<string, 
   summary.tokens_examined = rows.length;
   summary.evidence_written = evidenceCount;
   summary.jupiter_route_checks = routeChecks;
+  await sourceStatus(db, "raw_rpc", "partial", Number(summary.raw_rpc_candidates || 0), undefined, { pipeline: "bounded recent Tokenkeg and Token-2022 mint-initialization polling; a streaming/indexer feed is needed for complete coverage" });
   await sourceStatus(db, "wallet_graph", "partial", evidenceCount, undefined, { pipeline: "persisted wallet relationship evidence; upstream wallet history completeness remains dependent on RPC ingestion" });
   await sourceStatus(db, "liquidity", "partial", rows.length, undefined, { pipeline: "historical token snapshots; independent buyer counts not inferred" });
   await sourceStatus(db, "social_narrative", "partial", evidenceCount, undefined, { pipeline: "matches existing social events; narrative-before-token trend detection needs broader social sources" });
   await sourceStatus(db, "launchpad", "partial", rows.length, undefined, { pipeline: "PumpPortal events and persisted launchpad attribution" });
   await sourceStatus(db, "trading_route", "healthy", routeChecks, undefined, { provider: "Jupiter quote API", note: "quote availability is not execution proof" });
+  await sourceStatus(db, "developer_community", "partial", rows.length, undefined, { pipeline: "extracts project website/social/GitHub URLs from token metadata; no domain-age or repository-activity provider yet" });
   return summary;
 }
