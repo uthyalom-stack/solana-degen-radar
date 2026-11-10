@@ -342,7 +342,10 @@ export class SolanaRpcClient {
   async getParsedTransaction(signature: string): Promise<{
     signature: string;
     blockTime: number | null;
+    slot: number | null;
     transfers: Array<{ from: string; to: string; lamports: number }>;
+    programIds: string[];
+    accountKeys: string[];
   } | null> {
     try {
       const tx = await this.rpcCall<any>("getTransaction", [
@@ -352,8 +355,12 @@ export class SolanaRpcClient {
 
       if (!tx) return null;
       const transfers: Array<{ from: string; to: string; lamports: number }> = [];
-
-      const instructions = tx.transaction?.message?.instructions || [];
+      const message = tx.transaction?.message || {};
+      const topLevel = message.instructions || [];
+      const inner = (tx.meta?.innerInstructions || []).flatMap((group: any) => group.instructions || []);
+      const instructions = [...topLevel, ...inner];
+      const programIds = Array.from(new Set(instructions.map((ix: any) => ix.programId).filter((v: any): v is string => typeof v === "string")));
+      const accountKeys = (message.accountKeys || []).map((key: any) => typeof key === "string" ? key : key?.pubkey).filter((v: any): v is string => typeof v === "string");
       for (const ix of instructions) {
         if (ix.program === "system" && ix.parsed?.type === "transfer") {
           const info = ix.parsed.info;
@@ -368,7 +375,10 @@ export class SolanaRpcClient {
       return {
         signature,
         blockTime: tx.blockTime,
+        slot: Number.isFinite(Number(tx.slot)) ? Number(tx.slot) : null,
         transfers,
+        programIds,
+        accountKeys,
       };
     } catch {
       return null;
