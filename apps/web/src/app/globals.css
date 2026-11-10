@@ -639,3 +639,88 @@ body { background:radial-gradient(ellipse 70% 42% at 65% -10%,rgba(48,83,177,.22
  .radar-sweep { animation:none; }
  *,*::before,*::after { scroll-behavior:auto!important;transition:none!important; }
 }
+
+
+
+/* Workspace system: page-level hierarchy and responsive data surfaces */
+.workspace-description { max-width:760px;margin:8px 0 0;color:#8fa1bc;font-size:11px;line-height:1.65; }
+.workspace-metrics { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:11px;margin:0 0 22px; }
+.workspace-metric-card { position:relative;display:flex;min-height:102px;flex-direction:column;gap:7px;overflow:hidden;padding:15px 16px;border:1px solid rgba(125,151,196,.16);border-radius:13px;background:linear-gradient(145deg,rgba(15,24,43,.9),rgba(8,14,27,.95)); }
+.workspace-metric-card > span { color:#8294af;font:700 8px var(--font-mono);letter-spacing:.13em;text-transform:uppercase; }
+.workspace-metric-card > strong { color:#f2f7ff;font-size:22px;font-weight:820;letter-spacing:-.045em;line-height:1.1; }
+.workspace-metric-card > small { color:#71839e;font-size:9px; }
+.metric-accent { position:absolute;right:-17px;bottom:-29px;width:74px;height:74px;border:1px solid rgba(53,231,245,.18);border-radius:50%;box-shadow:0 0 0 10px rgba(53,231,245,.025),0 0 0 22px rgba(53,231,245,.018); }
+.metric-accent-1 { border-color:rgba(155,130,255,.24);box-shadow:0 0 0 10px rgba(155,130,255,.03),0 0 0 22px rgba(155,130,255,.018); }
+.metric-accent-2 { border-color:rgba(76,224,161,.2);box-shadow:0 0 0 10px rgba(76,224,161,.025),0 0 0 22px rgba(76,224,161,.015); }
+.terminal-workspace > div:not(.workspace-topline):not(.workspace-metrics) { min-width:0; }
+.terminal-workspace h3 { margin:0 0 10px;color:#f0f5ff;font-size:16px;font-weight:780;letter-spacing:-.025em; }
+.terminal-workspace h4 { margin:20px 0 11px;color:#dfe9fb;font-size:12px;font-weight:750;letter-spacing:.01em; }
+.terminal-workspace p { color:#91a1b9;line-height:1.7; }
+.terminal-workspace label { color:#9baac0;font-size:10px;font-weight:650; }
+.terminal-workspace input:not([type="range"]),.terminal-workspace select,.terminal-workspace textarea { min-height:40px;padding:10px 12px;border:1px solid rgba(125,151,196,.2);border-radius:9px;background:#080f1d;color:#eef5ff;font-size:11px;outline:none; }
+.terminal-workspace input:focus,.terminal-workspace select:focus,.terminal-workspace textarea:focus { border-color:rgba(53,231,245,.55);box-shadow:0 0 0 3px rgba(53,231,245,.07); }
+.terminal-workspace .trade-form { display:flex;align-items:flex-end;gap:12px;padding:17px;border:1px solid rgba(125,151,196,.15);border-radius:13px;background:rgba(5,10,20,.52); }
+.terminal-workspace .trade-form label { flex:1;display:flex;flex-direction:column;gap:7px; }
+.terminal-workspace .panel { padding:17px;border:1px solid rgba(125,151,196,.15);border-radius:13px;background:rgba(11,18,32,.84); }
+.terminal-workspace .portfolio-stats { display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:10px;margin:16px 0; }
+.terminal-workspace .portfolio-stats > div { display:flex;flex-direction:column;gap:8px;padding:14px;border:1px solid rgba(125,151,196,.15);border-radius:11px;background:rgba(8,14,27,.82); }
+.terminal-workspace .portfolio-stats strong { color:#f3f7ff;font-size:17px;letter-spacing:-.03em; }
+.terminal-workspace .table-wrap { overflow-x:auto;border:1px solid rgba(125,151,196,.14);border-radius:12px;background:rgba(5,10,20,.35); }
+.terminal-workspace table { width:100%;border-collapse:collapse; }
+.terminal-workspace th { padding:12px 13px;color:#7486a2;font:700 8px var(--font-mono);letter-spacing:.13em;text-align:left;white-space:nowrap;border-bottom:1px solid rgba(125,151,196,.15); }
+.terminal-workspace td { padding:12px 13px;color:#d3deef;font-size:10px;border-bottom:1px solid rgba(125,151,196,.09); }
+.terminal-workspace tbody tr:last-child td { border-bottom:0; }
+.terminal-workspace tbody tr:hover { background:rgba(53,231,245,.035); }
+.terminal-workspace .empty { margin:14px 0 0;padding:26px 16px;border:1px dashed rgba(125,151,196,.2);border-radius:11px;background:rgba(8,14,26,.45);color:#8294af;text-align:center;font-size:11px; }
+.terminal-workspace .notice { border:1px solid rgba(125,151,196,.16);background:rgba(10,17,31,.78); }
+.terminal-workspace .risk,.terminal-workspace .tag,.terminal-workspace .badge { border-radius:6px;font-size:9px;font-weight:750;letter-spacing:.035em; }
+.terminal-workspace .button { min-height:34px;padding:8px 11px!important;font-size:10px!important;font-weight:700; }
+.terminal-workspace .button.outline { background:rgba(255,255,255,.025);border:1px solid rgba(125,151,196,.22);color:#b7c5db; }
+.terminal-workspace .button.warning { background:rgba(244,184,94,.12);border:1px solid rgba(244,184,94,.3);color:#ffd08a; }
+.terminal-workspace pre { max-width:100%;overflow:auto;padding:13px;border:1px solid rgba(125,151,196,.14);border-radius:10px;background:#050a13;color:#a9bad3;font-size:9px; }
+.terminal-workspace .audit-grid { display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px; }
+.terminal-workspace .audit-card { min-height:90px;padding:14px;border:1px solid rgba(125,151,196,.16);border-radius:11px;background:rgba(8,14,27,.82); }
+.terminal-workspace .audit-card strong { display:block;margin-bottom:9px;color:#e4edfb;font-size:10px; }
+.terminal-workspace .audit-card div { color:#91a2bb;font-size:10px;line-height:1.5; }
+.terminal-workspace .audit-card.pass { border-top:2px solid rgba(76,224,161,.55); }
+.terminal-workspace .audit-card.flag { border-top:2px solid rgba(255,100,126,.65); }
+.terminal-workspace .external-links { display:flex;flex-wrap:wrap;gap:8px; }
+.terminal-workspace .external-link { padding:8px 11px;border:1px solid rgba(125,151,196,.17);border-radius:8px;color:#8debf4;font-size:10px;text-decoration:none; }
+.terminal-workspace .external-link:hover { background:rgba(53,231,245,.07);border-color:rgba(53,231,245,.38); }
+.terminal-workspace .filter-bar { display:flex;flex-wrap:wrap;align-items:center;gap:10px; }
+.terminal-workspace .filter-pill { min-height:31px;padding:6px 10px;font-size:9px;font-weight:750; }
+.terminal-workspace .trade-form + .portfolio-stats { margin-top:18px; }
+.terminal-workspace .modal { background:#0a1220;border:1px solid rgba(125,151,196,.2);border-radius:16px;box-shadow:0 30px 100px rgba(0,0,0,.65); }
+.terminal-workspace .modal-header { border-bottom:1px solid rgba(125,151,196,.13);padding-bottom:13px;margin-bottom:14px; }
+.sidebar-footer .status-indicator .radar-dot { background:#f4b85e;box-shadow:0 0 9px rgba(244,184,94,.55); }
+.sidebar-footer .status-indicator:has(span:first-child[style*="green"]) .radar-dot { background:#4ce0a1; }
+.spotify-player { left:272px; }
+.sidebar.collapsed ~ .main-wrapper .spotify-player { left:96px; }
+.spotify-player-bar { border-bottom:1px solid rgba(125,151,196,.1); }
+.spotify-player button:disabled { opacity:.4;cursor:not-allowed; }
+.spotify-mobile-island { cursor:pointer; }
+@media(max-width:1100px) {
+ .workspace-metrics { grid-template-columns:repeat(3,minmax(0,1fr)); }
+ .spotify-player { left:272px;width:min(460px,calc(100vw - 300px)); }
+}
+@media(max-width:960px) {
+ .workspace-metrics { grid-template-columns:repeat(3,minmax(0,1fr)); }
+ .workspace-metric-card { min-height:90px;padding:12px; }
+ .workspace-metric-card > strong { font-size:19px; }
+ .terminal-workspace .trade-form { align-items:stretch;flex-direction:column; }
+ .terminal-workspace .trade-form label { width:100%; }
+ .spotify-player { left:10px;right:10px;width:auto; }
+}
+@media(max-width:620px) {
+ .workspace-topline { display:block; }
+ .workspace-meta { margin-top:10px; }
+ .workspace-metrics { grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:16px; }
+ .workspace-metric-card { min-height:86px;padding:11px; }
+ .workspace-metric-card > span { font-size:7px; }
+ .workspace-metric-card > strong { font-size:17px; }
+ .workspace-metric-card > small { font-size:8px; }
+ .terminal-workspace h3 { font-size:14px; }
+ .terminal-workspace .portfolio-stats { grid-template-columns:repeat(2,minmax(0,1fr)); }
+ .terminal-workspace .external-links { gap:6px; }
+ .terminal-workspace .external-link { font-size:9px;padding:7px 8px; }
+}
