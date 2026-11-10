@@ -350,3 +350,19 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   .page-intro { align-items: stretch; flex-direction: column; gap: 14px; padding-bottom: 18px; }
   .page-intro-status { min-width: 0; }
 }
+
+
+/* Correct desktop rail vs mobile drawer navigation */
+@media (min-width: 961px) {
+  .mobile-menu-toggle { display: none !important; }
+  .sidebar { position: sticky; top: 0; height: 100dvh; align-self: flex-start; }
+  .sidebar .collapse-btn { width: 34px; height: 34px; border: 1px solid rgba(0,243,255,.22); border-radius: 10px; color: var(--accent-cyan); }
+  .sidebar.collapsed .sidebar-header { justify-content: center; padding: 14px 8px; }
+  .sidebar.collapsed .collapse-btn { margin: 0 auto; }
+}
+@media (max-width: 960px) {
+  .mobile-menu-toggle { display: inline-flex !important; flex: 0 0 auto; }
+  .sidebar .collapse-btn { display: none !important; }
+  .sidebar { height: 100dvh; overflow-y: auto; }
+  .sidebar.mobile-open { box-shadow: 24px 0 60px rgba(0,0,0,.55); }
+}
