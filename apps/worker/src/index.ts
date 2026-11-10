@@ -268,6 +268,10 @@ async function runMarketScan(env: Env) {
                 creatorAddress
               );
 
+              // Compare this mint's largest holders with prior token holder snapshots.
+              // Co-holding remains an inference; the engine retains the supporting evidence.
+              await WalletIntelligenceEngine.detectWalletClusters(env.DB, mint);
+
               // Ingest parsed on-chain transfer history for top holders to populate wallet_activities
               for (const holder of resolvedHolders.slice(0, 3)) {
                 try {
