@@ -179,6 +179,25 @@ export async function runMultiSourceDiscovery(env: Env): Promise<Record<string, 
   // A tip is only a weak bundle indicator; it does not prove bundle membership or malicious coordination.
   const tipAccounts = (env.JITO_TIP_ACCOUNTS || "").split(",").map(x => x.trim()).filter(Boolean);
   const rpc = new SolanaRpcClient(env);
+  const monitoredPrograms = (env.SOLANA_DISCOVERY_PROGRAM_IDS || "").split(",").map(x => x.trim()).filter(Boolean);
+  let programActivityCount = 0;
+  if (monitoredPrograms.length) {
+    const programTransactions = await rpc.getRecentProgramTransactions(monitoredPrograms, 5);
+    for (const activity of programTransactions) {
+      const involved = rows.filter(token => activity.accountKeys.includes(token.mint));
+      for (const token of involved) {
+        await recordDiscoveryEvidence(db,token.mint,"solana_program",`${activity.programId}:${activity.signature}`,
+          "launchpad_or_pool_program_interaction","weak",{
+            programId:activity.programId,signature:activity.signature,slot:activity.slot,
+            blockTime:activity.blockTime,caveat:"Program interaction is a discovery clue, not proof of pool initialization."
+          },activity.blockTime ? new Date(activity.blockTime*1000).toISOString() : isoNow());
+        programActivityCount++;
+      }
+    }
+  }
+  await sourceStatus(db,"solana_program_activity",monitoredPrograms.length ? "partial" : "disabled",programActivityCount,
+    monitoredPrograms.length ? undefined : "Set SOLANA_DISCOVERY_PROGRAM_IDS to monitor selected launchpad and AMM program accounts.",
+    {programsConfigured:monitoredPrograms.length});
   let jitoIndicators = 0;
   let bridgeIndicators = 0;
   const activityRows = await db.prepare(
