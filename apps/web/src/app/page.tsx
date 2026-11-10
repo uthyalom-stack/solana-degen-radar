@@ -328,7 +328,7 @@ export default function Home() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
-  const [spotifyClientId, setSpotifyClientId] = useState("");
+  const [spotifyClientId, setSpotifyClientId] = useState(process.env.NEXT_PUBLIC_SPOTIFY_CLIENT_ID || "");
   const [envStatusData, setEnvStatusData] = useState<any>(null);
 
   const refresh = useCallback(async () => {
@@ -365,7 +365,8 @@ export default function Home() {
 
   useEffect(() => {
     const savedSpotifyClientId = window.localStorage.getItem("radar_spotify_client_id");
-    if (savedSpotifyClientId) setSpotifyClientId(savedSpotifyClientId);
+    const configuredSpotifyClientId = process.env.NEXT_PUBLIC_SPOTIFY_CLIENT_ID || "";
+    setSpotifyClientId(savedSpotifyClientId || configuredSpotifyClientId);
   }, []);
 
   useEffect(() => {
