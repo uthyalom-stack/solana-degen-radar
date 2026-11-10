@@ -2044,28 +2044,20 @@ export default function Home() {
             <h3>Evidence-Based Security Audit</h3>
             <div className="audit-grid">
               <div
-                className={`audit-card ${
-                  tokenDetail?.risk?.flags.some(f => f.includes("Mint authority")) ? "flag" : "pass"
-                }`}
+                className={`audit-card ${mintAuthorityActive ? "flag" : mintAuthorityUnknown || !tokenDetail ? "unknown" : "pass"}`}
               >
                 <strong>Mint Authority</strong>
                 <div>
-                  {tokenDetail?.risk?.flags.some(f => f.includes("Mint authority"))
-                    ? "❌ Active (Deployer can mint)"
-                    : "✅ Disabled / Renounced"}
+                  {mintAuthorityActive ? "Active — mint authority risk detected" : mintAuthorityUnknown || !tokenDetail ? "Not verified — evidence unavailable" : "No active mint-authority flag reported"}
                 </div>
               </div>
 
               <div
-                className={`audit-card ${
-                  tokenDetail?.risk?.flags.some(f => f.includes("Freeze authority")) ? "flag" : "pass"
-                }`}
+                className={`audit-card ${freezeAuthorityActive ? "flag" : freezeAuthorityUnknown || !tokenDetail ? "unknown" : "pass"}`}
               >
                 <strong>Freeze Authority</strong>
                 <div>
-                  {tokenDetail?.risk?.flags.some(f => f.includes("Freeze authority"))
-                    ? "❌ Active (Can freeze wallets)"
-                    : "✅ Disabled / Renounced"}
+                  {freezeAuthorityActive ? "Active — freeze authority risk detected" : freezeAuthorityUnknown || !tokenDetail ? "Not verified — evidence unavailable" : "No active freeze-authority flag reported"}
                 </div>
               </div>
 
