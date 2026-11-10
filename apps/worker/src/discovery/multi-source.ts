@@ -266,14 +266,14 @@ export async function runMultiSourceDiscovery(env: Env): Promise<Record<string, 
   for (const post of socialRows.results || []) {
     const body = String(post.text_content || "");
     const matches = [
-      ...(body.match(/#[\\p{L}\\p{N}_]{3,}/gu) || []).map((v:string)=>({term:v.slice(1),type:"hashtag"})),
-      ...(body.match(/\\$[A-Z][A-Z0-9]{2,}/g) || []).map((v:string)=>({term:v.slice(1),type:"cashtag"})),
+      ...(body.match(/#[\p{L}\p{N}_]{3,}/gu) || []).map((v:string)=>({term:v.slice(1),type:"hashtag"})),
+      ...(body.match(/\$[A-Z][A-Z0-9]{2,}/g) || []).map((v:string)=>({term:v.slice(1),type:"cashtag"})),
     ];
     let metrics:any = {};
     try { metrics = JSON.parse(post.metrics_json || "{}"); } catch { metrics = {}; }
     const engagement = ["likes","reposts","comments","views","score"].reduce((sum,key)=>sum+(Number(metrics[key])||0),0);
     for (const match of matches) {
-      const normalized = match.term.toLowerCase().replace(/[^\\p{L}\\p{N}_]/gu,"").slice(0,64);
+      const normalized = match.term.toLowerCase().replace(/[^\p{L}\p{N}_]/gu,"").slice(0,64);
       if (normalized.length < 3) continue;
       const current = emerging.get(normalized) || {display:match.term,type:match.type,count:0,sources:new Set<string>(),engagement:0,evidence:[]};
       current.count++;
