@@ -143,3 +143,17 @@ CREATE TABLE IF NOT EXISTS program_activity_cursors (
   last_slot INTEGER,
   updated_at TEXT NOT NULL
 );
+
+-- Emerging meme/narrative terms detected before a matching token is known.
+CREATE TABLE IF NOT EXISTS emerging_narratives (
+  normalized_term TEXT PRIMARY KEY,
+  display_term TEXT NOT NULL,
+  term_type TEXT NOT NULL,
+  first_seen_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  mention_count INTEGER NOT NULL DEFAULT 0,
+  independent_source_count INTEGER NOT NULL DEFAULT 0,
+  engagement_total REAL NOT NULL DEFAULT 0,
+  evidence_json TEXT NOT NULL DEFAULT '[]'
+);
+CREATE INDEX IF NOT EXISTS idx_emerging_narratives_velocity ON emerging_narratives(last_seen_at DESC, mention_count DESC);
