@@ -284,7 +284,7 @@ export default function SpotifyPlayer() {
             {!authorized && <p className="spotify-hint">Connect your Spotify Premium account to search and control playback here. Spotify approval and a registered redirect URI are required for this commercial product.</p>}
           </div>
         )}
-      </section> 
       </section>
     </div>
+  );
 }
