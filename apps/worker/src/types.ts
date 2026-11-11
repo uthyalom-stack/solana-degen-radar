@@ -21,6 +21,7 @@ export interface Env {
   X_BEARER_TOKEN?: string;
   X_SEARCH_QUERIES?: string;
   X_TRACKED_ACCOUNTS?: string;
+  X_SCAN_INTERVAL_MINUTES?: string;
   REDDIT_USER_AGENT?: string;
   JITO_TIP_ACCOUNTS?: string;
   BRIDGE_PROGRAM_IDS?: string;
