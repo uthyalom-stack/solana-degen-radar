@@ -17,10 +17,12 @@ import { XAdapter } from "./adapters/x";
 import { DexScreenerClient } from "./discovery/dexscreener";
 import { PumpFunDiscovery } from "./discovery/pumpfun";
 import { SolanaRpcClient } from "./discovery/solana-rpc";
+import { recordDiscoveryEvidence, runMultiSourceDiscovery } from "./discovery/multi-source";
 import { PaperTradingEngine } from "./paper-trading";
 import { WalletIntelligenceEngine } from "./intelligence/wallet-intel";
 import { BreakoutEngine } from "./intelligence/breakout";
 import { BacktestService } from "./intelligence/backtest-service";
+import { PerformanceService } from "./intelligence/performance-service";
 import { LiveSwapService } from "./trading/live-swap-service";
 import type { Env, Pair, SocialAdapter } from "./types";
 
@@ -142,7 +144,23 @@ async function runMarketScan(env: Env) {
     const dexClient = new DexScreenerClient(env);
     const rpcClient = new SolanaRpcClient(env);
 
-    const [profileMints, boostMints, launchMints] = await Promise.all([
+    // Discover mint initialization directly from Tokenkeg and Token-2022 program history.
+    const rawRpcMints = await rpcClient.discoverRecentMintInitializations(6).catch(() => []);
+    for (const item of rawRpcMints) {
+      const observedAt = item.blockTime ? new Date(item.blockTime * 1000).toISOString() : now();
+      await env.DB.prepare(
+        `INSERT OR IGNORE INTO tokens (mint,name,symbol,decimals,first_seen_at,source,metadata_json)
+         VALUES (?,NULL,NULL,?,?,?,?)`
+      ).bind(item.mint,item.decimals,observedAt,"solana_rpc",JSON.stringify({
+        signature:item.signature,slot:item.slot,tokenProgram:item.tokenProgram,mintAuthority:item.mintAuthority,
+        discoveryMethod:"raw_rpc_mint_initialization"
+      })).run();
+      await recordDiscoveryEvidence(env.DB,item.mint,"raw_rpc",item.signature,"mint_initialization","confirmed",{
+        signature:item.signature,slot:item.slot,tokenProgram:item.tokenProgram,decimals:item.decimals,mintAuthority:item.mintAuthority
+      },observedAt);
+    }
+
+    const [profileMints, boostMints, launchMints, xSocialMints] = await Promise.all([
       dexClient.getLatestProfiles().catch(e => {
         errors.push(`Profiles error: ${e}`);
         return [];
@@ -152,9 +170,17 @@ async function runMarketScan(env: Env) {
         return [];
       }),
       PumpFunDiscovery.getRecentPumpPortalLaunches(env.DB, 20).catch(() => []),
+      env.DB.prepare("SELECT mint FROM tokens WHERE source='x_social' ORDER BY first_seen_at DESC LIMIT 20")
+        .all<{ mint: string }>().then(result => (result.results || []).map(row => row.mint)).catch(() => []),
     ]);
 
-    const candidates = Array.from(new Set([...profileMints.slice(0, 15), ...boostMints.slice(0, 15), ...launchMints.slice(0, 10)])).slice(0, 30);
+    const candidates = Array.from(new Set([
+      ...rawRpcMints.map(item => item.mint),
+      ...profileMints.slice(0, 15),
+      ...boostMints.slice(0, 15),
+      ...launchMints.slice(0, 10),
+      ...xSocialMints,
+    ])).slice(0, 40);
 
     if (candidates.length > 0) {
       const pairs = await dexClient.getPairsForMints(candidates);
@@ -246,6 +272,10 @@ async function runMarketScan(env: Env) {
                 creatorAddress
               );
 
+              // Compare this mint's largest holders with prior token holder snapshots.
+              // Co-holding remains an inference; the engine retains the supporting evidence.
+              await WalletIntelligenceEngine.detectWalletClusters(env.DB, mint);
+
               // Ingest parsed on-chain transfer history for top holders to populate wallet_activities
               for (const holder of resolvedHolders.slice(0, 3)) {
                 try {
@@ -330,9 +360,39 @@ async function runMarketScan(env: Env) {
             launchpad,
             holderInfo.holderCount,
             holderInfo.top10HolderPercent,
-            JSON.stringify({ dexId: pair.dexId, url: pair.url, pairAddress: pair.pairAddress })
+            JSON.stringify({ dexId: pair.dexId, url: pair.url, pairAddress: pair.pairAddress, info: pair.info || null, baseToken: token, quoteToken: pair.quoteToken || null })
           )
           .run();
+
+        // Detect Pump.fun graduation once the same mint appears in a downstream DEX pool.
+        const dexLabel = String(pair.dexId || "").toLowerCase();
+        const downstreamDex = dexLabel.includes("raydium") ? "raydium" : dexLabel.includes("meteora") ? "meteora" : null;
+        if (downstreamDex) {
+          const pumpLaunch = await env.DB.prepare(
+            "SELECT 1 AS found FROM pumpportal_events WHERE mint=? AND lower(event_type) LIKE '%create%' LIMIT 1"
+          ).bind(mint).first<any>();
+          if (pumpLaunch) {
+            await env.DB.prepare("UPDATE tokens SET is_migrated=1,migration_target=? WHERE mint=?")
+              .bind(downstreamDex,mint).run();
+            await env.DB.prepare(
+              `INSERT OR IGNORE INTO launchpad_observations (id,mint,launchpad,event_type,observed_at,migration_target,signature,evidence_json)
+               VALUES (?,?,?,?,?,?,?,?)`
+            ).bind(id(),mint,"pumpfun","graduated_migration",observed,downstreamDex,pair.pairAddress || null,
+              JSON.stringify({downstreamDex,pairAddress:pair.pairAddress,dexId:pair.dexId,source:"DEX Screener pool plus PumpPortal create event"})).run();
+            await recordDiscoveryEvidence(env.DB,mint,"launchpad_migration",pair.pairAddress || downstreamDex,
+              "pumpfun_graduation","strong",{from:"pumpfun",to:downstreamDex,pairAddress:pair.pairAddress,dexId:pair.dexId},observed);
+          }
+        }
+
+        // Preserve independent discovery evidence for DEX profile/boost and newly observed pool liquidity.
+        if ((profileMints as string[]).includes(mint)) {
+          await recordDiscoveryEvidence(env.DB,mint,"dexscreener","latest_token_profile","token_profile","confirmed",{source:"DEX Screener latest token profile"},observed);
+        }
+        if ((boostMints as string[]).includes(mint)) {
+          await recordDiscoveryEvidence(env.DB,mint,"dexscreener","token_boost","token_boost","confirmed",{source:"DEX Screener token boosts"},observed);
+        }
+        await recordDiscoveryEvidence(env.DB,mint,"liquidity_pool",pair.pairAddress || pair.dexId || "unknown-pool",
+          "pool_market_pair","strong",{dexId:pair.dexId,pairAddress:pair.pairAddress,liquidityUsd:num(pair.liquidity?.usd),volume5mUsd:num(pair.volume?.m5),volume1hUsd:num(pair.volume?.h1),buys5m:num(pair.txns?.m5?.buys),sells5m:num(pair.txns?.m5?.sells)},observed);
 
         // Save token price snapshot
         await env.DB.prepare(
@@ -435,7 +495,7 @@ async function ingestSocialObservations(
     text: string;
     url?: string;
     observedAt?: string;
-    metrics?: Record<string, number>;
+    metrics?: Record<string, unknown>;
   }>,
   env?: Env
 ) {
@@ -461,11 +521,95 @@ async function ingestSocialObservations(
       )
       .run();
 
+    // Record repeated X metrics snapshots even when the tweet itself was already ingested.
+    // This enables observed engagement acceleration instead of treating one-time likes as velocity.
+    if (obs.source.startsWith("x:")) {
+      const likes = num(obs.metrics?.likes) || 0;
+      const reposts = num(obs.metrics?.retweets) || 0;
+      const replies = num(obs.metrics?.replies) || 0;
+      const quotes = num(obs.metrics?.quotes) || 0;
+      const engagement = num(obs.metrics?.engagement) || 0;
+      await db.prepare(
+        "INSERT OR IGNORE INTO x_engagement_snapshots (id,tweet_id,captured_at,post_created_at,likes,reposts,replies,quotes,engagement) VALUES (?,?,?,?,?,?,?,?,?)"
+      ).bind(id(), obs.sourceId, now(), observed, likes, reposts, replies, quotes, engagement).run();
+    }
+
     if (!insertRes.meta.changes) continue;
     inserted++;
 
     const lower = obs.text.toLowerCase();
     const { mints, tickers } = extractSocialEntities(obs.text);
+
+    // Persist X author + exact-mint mention evidence for first-caller and convergence analysis.
+    if (obs.source.startsWith("x:")) {
+      const authorId = String(obs.metrics?.authorId || "").trim();
+      const username = String(obs.metrics?.username || "").trim().replace(/^@/, "").slice(0, 64);
+      const followers = num(obs.metrics?.followers);
+      const verified = Number(obs.metrics?.verified) === 1 ? 1 : 0;
+      const accountCreatedRaw = String(obs.metrics?.accountCreatedAt || "");
+      const accountCreatedAt = accountCreatedRaw && !Number.isNaN(Date.parse(accountCreatedRaw))
+        ? new Date(accountCreatedRaw).toISOString()
+        : null;
+      const likes = num(obs.metrics?.likes) || 0;
+      const reposts = num(obs.metrics?.retweets) || 0;
+      const replies = num(obs.metrics?.replies) || 0;
+      const engagement = num(obs.metrics?.engagement) || 0;
+      const queryType = String(obs.metrics?.queryType || "x_recent_search").slice(0, 80);
+
+      if (authorId) {
+        await db.prepare(
+          "INSERT INTO x_social_accounts (author_id,username,account_created_at,followers,verified,first_seen_at,last_seen_at,tweets_seen) VALUES (?,?,?,?,?,?,?,1) ON CONFLICT(author_id) DO UPDATE SET username=COALESCE(excluded.username,x_social_accounts.username),account_created_at=COALESCE(x_social_accounts.account_created_at,excluded.account_created_at),followers=COALESCE(excluded.followers,x_social_accounts.followers),verified=MAX(x_social_accounts.verified,excluded.verified),last_seen_at=MAX(x_social_accounts.last_seen_at,excluded.last_seen_at),tweets_seen=x_social_accounts.tweets_seen+1"
+        ).bind(authorId, username || null, accountCreatedAt, followers, verified, observed, observed).run();
+      }
+
+      for (const mint of mints) {
+        await db.prepare(
+          "INSERT OR IGNORE INTO x_mint_mentions (id,mint,tweet_id,author_id,username,observed_at,url,engagement,likes,reposts,replies,followers,account_created_at,verified,query_type,text_snippet) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+        ).bind(
+          id(), mint, obs.sourceId, authorId || null, username || null, observed, obs.url || null,
+          engagement, likes, reposts, replies, followers, accountCreatedAt, verified, queryType, obs.text.slice(0, 500)
+        ).run();
+
+        // Promote an X contract mention into the shared discovery candidate pipeline.
+        // The mint is only a social lead here: DEX/on-chain checks must validate it before
+        // it is treated as a real token or considered tradable.
+        await db.prepare(
+          "INSERT OR IGNORE INTO tokens (mint,name,symbol,decimals,first_seen_at,source,metadata_json) VALUES (?,NULL,NULL,NULL,?,?,?)"
+        ).bind(
+          mint,
+          observed,
+          "x_social",
+          JSON.stringify({
+            discoveryMethod: "x_contract_mention",
+            verificationStatus: "unverified",
+            tweetId: obs.sourceId,
+            authorId: authorId || null,
+            username: username || null,
+            postUrl: obs.url || null,
+            queryType,
+          })
+        ).run();
+
+        await recordDiscoveryEvidence(
+          db,
+          mint,
+          "x_social",
+          obs.sourceId,
+          "contract_mention",
+          "weak",
+          {
+            verificationStatus: "unverified",
+            authorId: authorId || null,
+            username: username || null,
+            followers,
+            engagement,
+            url: obs.url || null,
+            queryType,
+          },
+          observed
+        );
+      }
+    }
 
     for (const [themeKey, keywords] of Object.entries(DYNAMIC_THEMES)) {
       const hits = keywords.filter(k => lower.includes(k));
@@ -745,6 +889,10 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
     if (reservation.state === "in_progress") {
       return json({ error: "Concurrent request in progress for this idempotency key" }, 409);
     }
+
+    if (reservation.state === "unavailable") {
+      return json({ error: "Idempotency protection is unavailable; mutation was not processed" }, 503);
+    }
   }
 
   try {
@@ -791,7 +939,7 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
     }
 
     // 3. Single token deep-dive
-    if (path.startsWith("/api/tokens/") && method === "GET") {
+    if (path.startsWith("/api/tokens/") && path.split("/").length === 4 && method === "GET") {
       const mint = path.split("/")[3]?.trim();
       if (!mint) throw new ApiError("Mint address required");
 
@@ -820,6 +968,45 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
       });
     }
 
+    // Emerging social terms surfaced before a matching token is known.
+    if (path === "/api/discovery/narratives" && method === "GET") {
+      const rows = await env.DB.prepare(
+        "SELECT normalized_term,display_term,term_type,first_seen_at,last_seen_at,mention_count,independent_source_count,engagement_total,evidence_json FROM emerging_narratives ORDER BY independent_source_count DESC,mention_count DESC,last_seen_at DESC LIMIT 100"
+      ).all<any>();
+      return json(rows.results || []);
+    }
+
+    // Multi-source discovery registry and transparent source health.
+    if (path === "/api/discovery/candidates" && method === "GET") {
+      const limit = Math.min(200, Math.max(1, Number(url.searchParams.get("limit")) || 60));
+      const rows = await env.DB.prepare(
+        `SELECT dc.mint,dc.first_discovered_at,dc.last_discovered_at,dc.discovery_score,dc.source_count,
+          dc.source_summary_json,t.name,t.symbol,t.launchpad,t.creator_address,
+          (SELECT price_usd FROM token_snapshots ts WHERE ts.mint=dc.mint ORDER BY observed_at DESC LIMIT 1) AS price_usd,
+          (SELECT liquidity_usd FROM token_snapshots ts WHERE ts.mint=dc.mint ORDER BY observed_at DESC LIMIT 1) AS liquidity_usd,
+          (SELECT risk_score FROM risk_assessments ra WHERE ra.mint=dc.mint ORDER BY assessed_at DESC LIMIT 1) AS risk_score
+         FROM discovery_candidates dc JOIN tokens t ON t.mint=dc.mint
+         ORDER BY dc.discovery_score DESC,dc.last_discovered_at DESC LIMIT ?`
+      ).bind(limit).all<any>();
+      return json(rows.results || []);
+    }
+
+    if (path === "/api/discovery/sources" && method === "GET") {
+      const rows = await env.DB.prepare(
+        "SELECT source_type,status,last_attempt_at,last_success_at,items_seen,error_message,details_json FROM discovery_source_status ORDER BY source_type"
+      ).all<any>();
+      return json(rows.results || []);
+    }
+
+    if (path === "/api/discovery/evidence" && method === "GET") {
+      const mint = String(url.searchParams.get("mint") || "").trim();
+      if (!mint) throw new ApiError("mint query parameter is required", 400);
+      const rows = await env.DB.prepare(
+        "SELECT source_type,source_id,evidence_type,confidence,observed_at,evidence_json FROM discovery_evidence WHERE mint=? ORDER BY observed_at DESC LIMIT 200"
+      ).bind(mint).all<any>();
+      return json(rows.results || []);
+    }
+
     // 4. Narratives
     if (path === "/api/narratives" && method === "GET") {
       const rows = await env.DB.prepare(
@@ -836,6 +1023,31 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
     if (path === "/api/alerts" && method === "GET") {
       const rows = await env.DB.prepare("SELECT * FROM alerts ORDER BY created_at DESC LIMIT 100").all<any>();
       return json(rows.results || []);
+    }
+
+    // X early discovery: first observed callers and independent-account convergence.
+    if (path === "/api/social/x/early-signals" && method === "GET") {
+      const mint = String(url.searchParams.get("mint") || "").trim();
+      if (mint) {
+        const mentions = await env.DB.prepare(
+          "SELECT m.tweet_id,m.author_id,m.username,m.observed_at,m.url,m.engagement,m.likes,m.reposts,m.replies,m.followers,m.account_created_at,m.verified,m.query_type,m.text_snippet,(SELECT MIN(captured_at) FROM x_engagement_snapshots e WHERE e.tweet_id=m.tweet_id) AS first_metrics_capture,(SELECT MAX(captured_at) FROM x_engagement_snapshots e WHERE e.tweet_id=m.tweet_id) AS latest_metrics_capture,(SELECT engagement FROM x_engagement_snapshots e WHERE e.tweet_id=m.tweet_id ORDER BY captured_at ASC LIMIT 1) AS initial_engagement,(SELECT engagement FROM x_engagement_snapshots e WHERE e.tweet_id=m.tweet_id ORDER BY captured_at DESC LIMIT 1) AS latest_engagement FROM x_mint_mentions m WHERE m.mint=? ORDER BY m.observed_at ASC LIMIT 200"
+        ).bind(mint).all<any>();
+        const summary = await env.DB.prepare(
+          "SELECT COUNT(*) AS mentions,COUNT(DISTINCT author_id) AS unique_callers,MIN(observed_at) AS first_observed_at,MAX(observed_at) AS last_observed_at,COALESCE(SUM(engagement),0) AS engagement FROM x_mint_mentions WHERE mint=?"
+        ).bind(mint).first<any>();
+        return json({ mint, summary, firstCallers: mentions.results || [], caveat: "Earliest post timestamp in this radar’s captured recent-search sample, not necessarily the first post on X. Recent search is window-limited; historical caller skill is not inferred from mention order." });
+      }
+      const rows = await env.DB.prepare(
+        "SELECT mint,COUNT(*) AS mentions,COUNT(DISTINCT author_id) AS unique_callers,MIN(observed_at) AS first_observed_at,MAX(observed_at) AS last_observed_at,COALESCE(SUM(engagement),0) AS engagement FROM x_mint_mentions WHERE julianday(observed_at)>=julianday('now','-24 hours') GROUP BY mint ORDER BY unique_callers DESC,first_observed_at ASC LIMIT 100"
+      ).all<any>();
+      return json({ candidates: rows.results || [], window: "24h", caveat: "Convergence counts distinct observed X authors; it does not prove organic coordination or predict profitability." });
+    }
+
+    if (path === "/api/social/x/callers" && method === "GET") {
+      const rows = await env.DB.prepare(
+        "SELECT a.author_id,a.username,a.account_created_at,a.followers,a.verified,a.first_seen_at,a.last_seen_at,a.tweets_seen,COUNT(DISTINCT m.mint) AS distinct_mints,COUNT(m.tweet_id) AS mint_mentions,MIN(m.observed_at) AS earliest_mint_mention FROM x_social_accounts a LEFT JOIN x_mint_mentions m ON m.author_id=a.author_id GROUP BY a.author_id ORDER BY distinct_mints DESC,mint_mentions DESC,a.last_seen_at DESC LIMIT 100"
+      ).all<any>();
+      return json({ callers: rows.results || [], caveat: "This is observed activity coverage, not a caller win-rate or reputation score. Outcome-labelled token history is required before ranking caller skill." });
     }
 
     // 6. Social Feed
@@ -863,6 +1075,8 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
       const body: any = await parseJson(request);
       const sessionId = body.sessionId || "default";
       try {
+        const riskCheck = await PerformanceService.checkPaperBuyRisk(env.DB, String(sessionId), Number(body.usd));
+        if (!riskCheck.allowed) throw new ApiError((riskCheck.violations || []).join("; "), 429);
         const buyResult = await PaperTradingEngine.buy(
           env.DB,
           env,
@@ -872,6 +1086,7 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
           sessionId,
           body.triggerSignal
         );
+        await PerformanceService.recordActivity(env.DB, String(sessionId), "paper_trade", buyResult.positionId);
         if (idempotencyKey) {
           await completeIdempotencyReservation(env.DB, idempotencyKey, JSON.stringify(buyResult), 201);
         }
@@ -896,6 +1111,7 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
           sessionId,
           num(body.portion) ?? 1.0
         );
+        await PerformanceService.recordActivity(env.DB, String(sessionId), "paper_trade", String(body.positionId));
         if (idempotencyKey) {
           await completeIdempotencyReservation(env.DB, idempotencyKey, JSON.stringify(sellResult), 200);
         }
@@ -910,7 +1126,10 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
 
     // 8. Trigger Scans
     if (path === "/api/scan" && method === "POST") {
-      return json(await runMarketScan(env));
+      const market = await runMarketScan(env);
+      const advanced = await runMultiSourceDiscovery(env).catch(error => ({ error: String(error) }));
+      await PerformanceService.recordActivity(env.DB, "default", "market_scan");
+      return json({ ...market, advancedDiscovery: advanced });
     }
 
     if (path === "/api/social/scan" && method === "POST") {
@@ -1004,6 +1223,57 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
       return json(await BacktestService.getRecentRuns(env.DB));
     }
 
+    // 13A. Performance, journaling, streaks, replay, strategy library and risk controls.
+    if (path === "/api/performance" && method === "GET") {
+      const sessionId = url.searchParams.get("sessionId") || "default";
+      return json(await PerformanceService.getPerformance(env.DB, sessionId));
+    }
+    if (path === "/api/activity/record" && method === "POST") {
+      const body:any = await parseJson(request);
+      return json(await PerformanceService.recordActivity(env.DB, String(body.sessionId || "default"), String(body.activityType || "review"), body.referenceId));
+    }
+    if (path === "/api/journal" && method === "GET") {
+      const sessionId = url.searchParams.get("sessionId") || "default";
+      return json(await PerformanceService.listJournal(env.DB, sessionId));
+    }
+    if (path === "/api/journal" && method === "POST") {
+      const body:any = await parseJson(request);
+      return json(await PerformanceService.saveJournal(env.DB, String(body.sessionId || "default"), body), 201);
+    }
+    if (path === "/api/risk-controls" && method === "GET") {
+      const sessionId = url.searchParams.get("sessionId") || "default";
+      return json(await PerformanceService.getRiskSettings(env.DB, sessionId));
+    }
+    if (path === "/api/risk-controls" && method === "POST") {
+      const body:any = await parseJson(request);
+      return json(await PerformanceService.saveRiskSettings(env.DB, String(body.sessionId || "default"), body));
+    }
+    if (path === "/api/wallet-leaderboard" && method === "GET") {
+      return json(await PerformanceService.getWalletLeaderboard(env.DB, Math.min(100, Math.max(1, Number(url.searchParams.get("limit")) || 50))));
+    }
+    if (path === "/api/signals/replay" && method === "GET") {
+      const mint = url.searchParams.get("mint") || undefined;
+      return json(await PerformanceService.replaySignals(env.DB, mint, Math.min(500, Math.max(1, Number(url.searchParams.get("limit")) || 200))));
+    }
+    if (path === "/api/execution/simulate" && method === "POST") {
+      const body:any = await parseJson(request);
+      return json(PerformanceService.simulateExecution({
+        side: body.side === "sell" ? "sell" : "buy",
+        amountUsd: Number(body.amountUsd),
+        priceUsd: Number(body.priceUsd),
+        liquidityUsd: Number(body.liquidityUsd),
+        slippageBps: Math.max(0, Math.min(5000, Number(body.slippageBps) || 50)),
+        feeBps: Math.max(0, Math.min(500, Number(body.feeBps) || 10)),
+      }));
+    }
+    if (path === "/api/strategies" && method === "GET") {
+      return json(await PerformanceService.listStrategies(env.DB, url.searchParams.get("sessionId") || "default"));
+    }
+    if (path === "/api/strategies" && method === "POST") {
+      const body:any = await parseJson(request);
+      return json(await PerformanceService.saveStrategy(env.DB, String(body.sessionId || "default"), body), 201);
+    }
+
     // 14. Direct Jupiter Swap Lifecycle (Phantom Live Trading)
     if (path === "/api/swap/quote" && method === "GET") {
       const inputMint = url.searchParams.get("inputMint") || "So11111111111111111111111111111111111111112"; // SOL
@@ -1087,6 +1357,9 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
           if (!pos) {
             throw new ApiError("Paper position record not found in database", 404);
           }
+          if (pos.status !== "closed") {
+            throw new ApiError("A paper PnL card can only be generated after the position is fully closed", 409);
+          }
           mint = pos.mint;
           quantity = pos.quantity;
           buyPrice = pos.entry_price_usd;
@@ -1110,22 +1383,43 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
           quantity = Number(liveTx.output_amount) || 0;
           buyPrice = invested > 0 && quantity > 0 ? invested / quantity : 0;
 
-          // Reconcile exit transaction to compute verified realized profit without trusting client numbers
+          // A buy is not a realized PnL event. Match a later, confirmed sell
+          // from the same wallet, swapping this exact token back to the original quote mint.
           const exitTx = await env.DB.prepare(
-            "SELECT * FROM live_transactions WHERE input_mint = ? AND status = 'confirmed' AND created_at > ? ORDER BY created_at ASC LIMIT 1"
-          ).bind(mint, liveTx.created_at).first<any>();
+            `SELECT * FROM live_transactions
+             WHERE wallet_address = ? AND input_mint = ? AND output_mint = ?
+               AND status = 'confirmed' AND submitted_at > ?
+             ORDER BY submitted_at ASC LIMIT 1`
+          ).bind(liveTx.wallet_address, liveTx.output_mint, liveTx.input_mint, liveTx.submitted_at).first<any>();
 
-          if (exitTx) {
-            sellPrice = Number(exitTx.output_amount) / (Number(exitTx.input_amount) || 1);
-            const exitGross = Number(exitTx.output_amount);
-            realizedPnl = exitGross - invested;
-            roiPct = invested > 0 ? (realizedPnl / invested) * 100 : 0;
-          } else {
-            sellPrice = buyPrice;
-            realizedPnl = 0;
-            roiPct = 0;
+          if (!exitTx) {
+            throw new ApiError("No matching confirmed sell transaction is recorded for this live buy yet. A buy alone has no realized PnL.", 409);
           }
+
+          const boughtQuantity = Number(liveTx.output_amount) || 0;
+          const soldQuantity = Number(exitTx.input_amount) || 0;
+          const proceeds = Number(exitTx.output_amount) || 0;
+          if (boughtQuantity <= 0 || soldQuantity <= 0 || proceeds <= 0 || soldQuantity > boughtQuantity * 1.0001) {
+            throw new ApiError("Live swap amounts do not form a valid single-buy/sell pair; refusing to generate an unverified PnL card.", 409);
+          }
+
+          // Attribute cost basis proportionally for a partial exit. Stored amounts must
+          // be normalized UI amounts (not raw token base units) by the swap tracker.
+          const matchedQuantity = soldQuantity;
+          invested = (Number(liveTx.input_amount) || 0) * (matchedQuantity / boughtQuantity);
+          quantity = matchedQuantity;
+          buyPrice = invested / matchedQuantity;
+          sellPrice = proceeds / matchedQuantity;
+          realizedPnl = proceeds - invested;
+          roiPct = invested > 0 ? (realizedPnl / invested) * 100 : 0;
+          txSignature = liveTx.signature;
         }
+
+        const tokenMeta = mint
+          ? await env.DB.prepare("SELECT symbol,name FROM tokens WHERE mint=?").bind(mint).first<any>()
+          : null;
+        symbol = String(tokenMeta?.symbol || symbol || "").toUpperCase();
+        name = String(tokenMeta?.name || name || symbol);
 
         const isPublic = body.isPublic === 1 || body.isPublic === true ? 1 : 0;
 
@@ -1404,7 +1698,8 @@ export type IdempotencyReservationResult =
   | { state: "reserved" }
   | { state: "completed"; responseBody: string; status: number }
   | { state: "conflict"; message: string }
-  | { state: "in_progress" };
+  | { state: "in_progress" }
+  | { state: "unavailable" };
 
 async function reserveIdempotencyKey(
   db: D1Database,
@@ -1440,7 +1735,7 @@ async function reserveIdempotencyKey(
       .first<any>();
 
     if (!existing) {
-      return { state: "reserved" };
+      return { state: "in_progress" };
     }
 
     // Check payload and endpoint binding
@@ -1479,8 +1774,8 @@ async function reserveIdempotencyKey(
 
     return { state: "in_progress" };
   } catch {
-    // Fallback on schema unavailability
-    return { state: "reserved" };
+    // Fail closed: never process a mutation when the idempotency store is unavailable.
+    return { state: "unavailable" };
   }
 }
 
@@ -1594,6 +1889,7 @@ export default {
       Promise.all([
         runMarketScan(env),
         runSocialScan(env),
+        runMultiSourceDiscovery(env),
         dispatchPendingAlerts(env),
       ])
     );

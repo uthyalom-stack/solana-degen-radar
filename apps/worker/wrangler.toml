@@ -10,6 +10,12 @@ PAPER_STARTING_BALANCE = "5"
 DEXSCREENER_BASE_URL = "https://api.dexscreener.com"
 SOLANA_RPC_URL = "https://api.mainnet-beta.solana.com"
 SOCIAL_RSS_FEEDS = ""
+X_SEARCH_QUERIES = ""
+X_TRACKED_ACCOUNTS = ""
+X_SCAN_INTERVAL_MINUTES = "15"
+JITO_TIP_ACCOUNTS = ""
+BRIDGE_PROGRAM_IDS = ""
+SOLANA_DISCOVERY_PROGRAM_IDS = ""
 
 [triggers]
 crons = ["*/5 * * * *"]

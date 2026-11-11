@@ -19,7 +19,13 @@ export interface Env {
   PUMPPORTAL_STREAM: DurableObjectNamespace;
   PAPER_STARTING_BALANCE?: string;
   X_BEARER_TOKEN?: string;
+  X_SEARCH_QUERIES?: string;
+  X_TRACKED_ACCOUNTS?: string;
+  X_SCAN_INTERVAL_MINUTES?: string;
   REDDIT_USER_AGENT?: string;
+  JITO_TIP_ACCOUNTS?: string;
+  BRIDGE_PROGRAM_IDS?: string;
+  SOLANA_DISCOVERY_PROGRAM_IDS?: string;
 }
 
 export type Pair = {
@@ -43,6 +49,13 @@ export type Pair = {
     h24?: { buys?: number; sells?: number };
   };
   boosts?: { active?: number };
+  info?: {
+    imageUrl?: string;
+    header?: string;
+    openGraph?: string;
+    websites?: Array<{ label?: string; url?: string }>;
+    socials?: Array<{ type?: string; url?: string }>;
+  };
 };
 
 export interface TokenRow {
@@ -72,7 +85,7 @@ export interface SocialAdapter {
     text: string;
     url?: string;
     observedAt: string;
-    metrics?: Record<string, number>;
+    metrics?: Record<string, unknown>;
   }>>;
   checkHealth(env: Env): Promise<ProviderHealth>;
 }

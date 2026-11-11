@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { PumpFunDiscovery } from "../src/discovery/pumpfun.ts";
+import { XAdapter } from "../src/adapters/x.ts";
 import {
   assessTokenRisk,
   scoreMomentum,
@@ -164,4 +165,90 @@ test("Paper trading mark-to-market valuations reflect actual price gains and los
   assert.ok(valueDown < investment, "Position should lose value on price decrease");
   assert.ok(unrealizedPlDown < 0, "Unrealized P/L should be negative on price decrease");
   assert.ok(unrealizedRoiDown < -35, "ROI should reflect price drop");
+});
+
+
+import { PerformanceService } from "../src/intelligence/performance-service.ts";
+
+test("Execution simulator increases estimated impact as liquidity decreases", () => {
+  const deep = PerformanceService.simulateExecution({
+    side: "buy", amountUsd: 100, priceUsd: 1, liquidityUsd: 100000,
+    slippageBps: 50, feeBps: 10,
+  });
+  const shallow = PerformanceService.simulateExecution({
+    side: "buy", amountUsd: 100, priceUsd: 1, liquidityUsd: 1000,
+    slippageBps: 50, feeBps: 10,
+  });
+  assert.ok(shallow.estimatedImpactUsd > deep.estimatedImpactUsd);
+  assert.ok(shallow.estimatedSlippageBps > deep.estimatedSlippageBps);
+});
+
+test("Execution simulator includes fees and adverse sell-side impact", () => {
+  const result = PerformanceService.simulateExecution({
+    side: "sell", amountUsd: 50, priceUsd: 2, liquidityUsd: 5000,
+    slippageBps: 25, feeBps: 20,
+  });
+  assert.equal(result.estimatedFeeUsd, 0.1);
+  assert.ok(result.estimatedFillPriceUsd < 2);
+  assert.ok(result.estimatedImpactUsd > 0);
+});
+
+
+test("X adapter runs separate early-discovery search lanes and preserves author identity", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (input) => {
+    requests.push(new URL(String(input)));
+    return new Response(JSON.stringify({
+      data: [{
+        id: "tweet-1",
+        text: "New Solana token mint 7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr",
+        author_id: "987654321012345678",
+        created_at: "2026-11-10T12:00:00.000Z",
+        public_metrics: { like_count: 12, retweet_count: 3, reply_count: 2, quote_count: 1 }
+      }],
+      includes: {
+        users: [{
+          id: "987654321012345678",
+          username: "earlycaller",
+          created_at: "2020-01-01T00:00:00.000Z",
+          verified: false,
+          public_metrics: { followers_count: 4200 }
+        }]
+      }
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+
+  try {
+    const observations = await new XAdapter().fetchObservations({ X_BEARER_TOKEN: "test-token", DB: { prepare: () => ({ bind: () => ({ first: async () => ({ id: "x_recent_search" }) }) }) } });
+    assert.equal(requests.length, 4);
+    assert.equal(observations.length, 1, "duplicate tweets across search lanes should be deduplicated");
+    assert.equal(observations[0].metrics.authorId, "987654321012345678");
+    assert.equal(observations[0].metrics.username, "earlycaller");
+    assert.equal(observations[0].metrics.followers, 4200);
+    assert.equal(observations[0].metrics.queryType, "launch_links");
+    assert.ok(requests.every(request => request.pathname.endsWith("/2/tweets/search/recent")));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+
+test("X adapter skips search while the D1 cooldown window is active", async () => {
+  const originalFetch = globalThis.fetch;
+  let requests = 0;
+  globalThis.fetch = async () => {
+    requests++;
+    return new Response(JSON.stringify({ data: [] }), { status: 200 });
+  };
+  try {
+    const observations = await new XAdapter().fetchObservations({
+      X_BEARER_TOKEN: "test-token",
+      DB: { prepare: () => ({ bind: () => ({ first: async () => null }) }) }
+    });
+    assert.deepEqual(observations, []);
+    assert.equal(requests, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

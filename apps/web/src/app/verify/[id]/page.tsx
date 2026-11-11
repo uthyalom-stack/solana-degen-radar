@@ -33,7 +33,9 @@ export default function VerifyPnlPage({ params }: { params: Promise<{ id: string
   useEffect(() => {
     async function fetchCard() {
       try {
-        const res = await fetch(`/api/pnl/card/${encodeURIComponent(id)}`);
+        const apiBase = process.env.NEXT_PUBLIC_RADAR_API_URL?.replace(/\/$/, "") || "";
+        if (!apiBase) throw new Error("Radar API is not configured for public PnL verification.");
+        const res = await fetch(`${apiBase}/api/pnl/card/${encodeURIComponent(id)}`, { cache: "no-store" });
         if (!res.ok) {
           throw new Error(`Record verification failed (HTTP ${res.status})`);
         }
@@ -53,7 +55,7 @@ export default function VerifyPnlPage({ params }: { params: Promise<{ id: string
       <div style={{ minHeight: "100vh", background: "#06090e", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center" }}>
         <div style={{ textAlign: "center" }}>
           <div style={{ fontSize: 24, marginBottom: 12 }}>🔍</div>
-          <div>Verifying on-chain & simulation records...</div>
+          <div>Loading the saved Radar trade record...</div>
         </div>
       </div>
     );
@@ -120,7 +122,7 @@ export default function VerifyPnlPage({ params }: { params: Promise<{ id: string
 
           <div style={{ textAlign: "center", margin: "24px 0", padding: "16px 0", background: "rgba(255, 255, 255, 0.02)", borderRadius: 12 }}>
             <div style={{ color: "#8b99ac", fontSize: 12, textTransform: "uppercase", letterSpacing: "0.05em" }}>
-              Verified Return on Investment
+              Recorded Return on Investment
             </div>
             <div style={{ fontSize: 44, fontWeight: 900, color: isPositive ? "#4ade80" : "#f87171", margin: "6px 0" }}>
               {isPositive ? "+" : ""}{card.roi_pct.toFixed(2)}%
@@ -169,9 +171,13 @@ export default function VerifyPnlPage({ params }: { params: Promise<{ id: string
             </div>
           )}
 
-          {!isLive && (
+          {isLive ? (
+            <div style={{ marginTop: 12, padding: "8px 12px", background: "rgba(239, 68, 68, 0.08)", borderRadius: 8, fontSize: 12, color: "#fca5a5" }}>
+              <strong>Live trade data limitation:</strong> Transaction confirmation is checked, but amounts currently use stored Jupiter quote values. Actual on-chain fills, network fees, rent and multiple partial exits are not fully reconciled; this record is not accounting-grade.
+            </div>
+          ) : (
             <div style={{ marginTop: 12, padding: "8px 12px", background: "rgba(148, 163, 184, 0.06)", borderRadius: 8, fontSize: 12, color: "#94a3b8" }}>
-              ℹ️ <strong>Simulated Trade Notice:</strong> This card reflects virtual paper trading execution and realistic price impact modeling in Cloudflare D1.
+              <strong>Paper simulation notice:</strong> This result is based on virtual paper-trading records, not a real wallet transaction.
             </div>
           )}
         </div>

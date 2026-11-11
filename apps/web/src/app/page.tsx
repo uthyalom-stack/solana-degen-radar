@@ -2,6 +2,11 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { VersionedTransaction } from "@solana/web3.js";
+import SpotifyPlayer from "../components/spotify-player";
+import PerformanceWorkspace from "../components/performance-workspace";
+import StreaksWorkspace from "../components/streaks-workspace";
+import PnlWorkspace from "../components/pnl-workspace";
+import XDiscoveryWorkspace from "../components/x-discovery-workspace";
 
 type Token = {
   mint: string;
@@ -192,12 +197,16 @@ const parseList = (value?: string) => {
 // Client-side authentication token support (configured via localStorage or environment)
 function getStoredAuthSecret(): string {
   if (typeof window !== "undefined") {
-    return localStorage.getItem("radar_auth_secret") || process.env.NEXT_PUBLIC_RADAR_SECRET || "";
+    // Privileged credentials must never be compiled into the public browser bundle.
+    return localStorage.getItem("radar_auth_secret") || "";
   }
-  return process.env.NEXT_PUBLIC_RADAR_SECRET || "";
+  return "";
 }
 
 async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  if (!API) {
+    throw new Error("Radar API is not configured. Set NEXT_PUBLIC_RADAR_API_URL to the deployed Cloudflare Worker API URL, then rebuild the web app.");
+  }
   const url = `${API}${path}`;
   const secret = getStoredAuthSecret();
   const headers: Record<string, string> = {
@@ -217,8 +226,19 @@ async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
     credentials: "include",
     cache: "no-store",
   });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
+  const contentType = response.headers.get("content-type") || "";
+  const responseText = await response.text();
+  let data: any;
+  try {
+    data = responseText ? JSON.parse(responseText) : null;
+  } catch {
+    const preview = responseText.replace(/\\s+/g, " ").slice(0, 180);
+    if (contentType.includes("text/html") || /^<!doctype html|^<html/i.test(responseText.trim())) {
+      throw new Error(`Radar API returned an HTML page instead of JSON (HTTP ${response.status}). Check NEXT_PUBLIC_RADAR_API_URL and the Cloudflare Worker route. Response: ${preview}`);
+    }
+    throw new Error(`Radar API returned invalid JSON (HTTP ${response.status}). Response: ${preview}`);
+  }
+  if (!response.ok) throw new Error(data?.error || `Request failed (${response.status})`);
   return data as T;
 }
 
@@ -226,6 +246,7 @@ export default function Home() {
   const [tradingMode, setTradingMode] = useState<"simulation" | "live">("simulation");
   const [tab, setTab] = useState<
     | "overview"
+    | "discovery"
     | "launches"
     | "trending"
     | "wallets"
@@ -239,10 +260,15 @@ export default function Home() {
     | "backtesting"
     | "providers"
     | "settings"
+    | "performance"
+    | "streaks"
+    | "pnl"
+    | "x_intel"
   >("overview");
 
   // State collections
   const [overview, setOverview] = useState<Overview | null>(null);
+  const [streakSummary, setStreakSummary] = useState<any>(null);
   const [tokens, setTokens] = useState<Token[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [narratives, setNarratives] = useState<Narrative[]>([]);
@@ -251,6 +277,9 @@ export default function Home() {
   const [providersHealth, setProvidersHealth] = useState<ProviderHealth[]>([]);
   const [breakoutSignals, setBreakoutSignals] = useState<BreakoutSignal[]>([]);
   const [backtestRuns, setBacktestRuns] = useState<BacktestRun[]>([]);
+  const [discoveryCandidates, setDiscoveryCandidates] = useState<any[]>([]);
+  const [discoverySources, setDiscoverySources] = useState<any[]>([]);
+  const [emergingNarratives, setEmergingNarratives] = useState<any[]>([]);
 
   // Filtering & Search
   const [search, setSearch] = useState("");
@@ -288,7 +317,8 @@ export default function Home() {
   const [phantomAddress, setPhantomAddress] = useState<string | null>(null);
   const [solBalance, setSolBalance] = useState<number | null>(null);
   const [liveSwapMint, setLiveSwapMint] = useState("");
-  const [liveSwapAmount, setLiveSwapAmount] = useState("0.1"); // SOL
+  const [liveSwapAmount, setLiveSwapAmount] = useState("0.1");
+  const [liveSwapDirection, setLiveSwapDirection] = useState<"buy" | "sell">("buy");
   const [liveQuote, setLiveQuote] = useState<any>(null);
   const [quoteBusy, setQuoteBusy] = useState(false);
   const [swapExecuting, setSwapExecuting] = useState(false);
@@ -312,12 +342,16 @@ export default function Home() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
-  const [spotifyClientId, setSpotifyClientId] = useState("");
+  const [spotifyClientId, setSpotifyClientId] = useState(process.env.NEXT_PUBLIC_SPOTIFY_CLIENT_ID || "");
   const [envStatusData, setEnvStatusData] = useState<any>(null);
 
   const refresh = useCallback(async () => {
+    if (!API) {
+      setError("Radar API is not connected. The Vercel frontend needs NEXT_PUBLIC_RADAR_API_URL pointing to the deployed Cloudflare Worker API. No scan or live data requests can work until it is configured.");
+      return;
+    }
     try {
-      const [o, t, a, n, p, f, pr, bks, bts] = await Promise.all([
+      const [o, t, a, n, p, f, pr, bks, bts, dc, ds, en, performanceData] = await Promise.all([
         apiRequest<Overview>("/api/status").catch(() => null),
         apiRequest<Token[]>("/api/tokens").catch(() => []),
         apiRequest<Alert[]>("/api/alerts").catch(() => []),
@@ -327,6 +361,10 @@ export default function Home() {
         apiRequest<ProviderHealth[]>("/api/providers").catch(() => []),
         apiRequest<BreakoutSignal[]>("/api/breakouts").catch(() => []),
         apiRequest<BacktestRun[]>("/api/backtest/runs").catch(() => []),
+        apiRequest<any[]>("/api/discovery/candidates").catch(() => []),
+        apiRequest<any[]>("/api/discovery/sources").catch(() => []),
+        apiRequest<any[]>("/api/discovery/narratives").catch(() => []),
+        apiRequest<any>("/api/performance").catch(() => null),
       ]);
       if (o) setOverview(o);
       setTokens(t);
@@ -337,6 +375,10 @@ export default function Home() {
       setProvidersHealth(pr);
       setBreakoutSignals(bks);
       setBacktestRuns(bts);
+      setDiscoveryCandidates(dc);
+      setDiscoverySources(ds);
+      setEmergingNarratives(en);
+      if (performanceData) setStreakSummary(performanceData);
       setError("");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Unable to reach Radar API");
@@ -344,7 +386,16 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    const savedSpotifyClientId = window.localStorage.getItem("radar_spotify_client_id");
+    const configuredSpotifyClientId = process.env.NEXT_PUBLIC_SPOTIFY_CLIENT_ID || "";
+    setSpotifyClientId(savedSpotifyClientId || configuredSpotifyClientId);
+  }, []);
+
+  useEffect(() => {
     void refresh();
+    void apiRequest("/api/activity/record", { method: "POST", body: JSON.stringify({ activityType: "login" }) })
+      .then(() => refresh())
+      .catch(() => {});
     const timer = setInterval(() => void refresh(), 30000);
     return () => clearInterval(timer);
   }, [refresh]);
@@ -516,25 +567,23 @@ export default function Home() {
   }
 
   // Get Jupiter Swap Quote
-  async function fetchJupiterQuote(outputMint: string, solAmount: number) {
+  async function fetchJupiterQuote(tokenMint: string, amount: number, direction: "buy" | "sell" = liveSwapDirection) {
     setQuoteBusy(true);
     setLiveQuote(null);
     setError("");
     try {
-      const lamports = Math.floor(solAmount * 1_000_000_000);
-      let decimals = 6;
-      try {
-        const decData = await apiRequest<any>(`/api/tokens/${outputMint}/decimals`);
-        if (decData && Number.isFinite(decData.decimals)) {
-          decimals = Number(decData.decimals);
-        }
-      } catch {
-        decimals = 6;
-      }
+      if (!Number.isFinite(amount) || amount <= 0) throw new Error("Enter a positive swap amount.");
+      const tokenInfo = await apiRequest<{ decimals: number }>(`/api/tokens/${encodeURIComponent(tokenMint)}/decimals`);
+      const inputMint = direction === "buy" ? "So11111111111111111111111111111111111111112" : tokenMint;
+      const outputMint = direction === "buy" ? tokenMint : "So11111111111111111111111111111111111111112";
+      const inputDecimals = direction === "buy" ? 9 : tokenInfo.decimals;
+      const outputDecimals = direction === "buy" ? tokenInfo.decimals : 9;
+      const baseUnits = Math.floor(amount * (10 ** inputDecimals));
+      if (!Number.isSafeInteger(baseUnits) || baseUnits <= 0) throw new Error("Swap amount is outside the supported range.");
       const quote = await apiRequest<any>(
-        `/api/swap/quote?inputMint=So11111111111111111111111111111111111111112&outputMint=${outputMint}&amount=${lamports}&slippageBps=${slippageToleranceBps}`
+        `/api/swap/quote?inputMint=${encodeURIComponent(inputMint)}&outputMint=${encodeURIComponent(outputMint)}&amount=${baseUnits}&slippageBps=${slippageToleranceBps}`
       );
-      setLiveQuote({ ...quote, decimals });
+      setLiveQuote({ ...quote, inputMint, outputMint, inputDecimals, outputDecimals, decimals: outputDecimals, direction });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to fetch Jupiter swap quote");
       setLiveQuote(null);
@@ -576,16 +625,22 @@ export default function Home() {
       setTxStatus("confirming");
       setMessage(`Transaction broadcast! Signature: ${signature.slice(0, 8)}... Tracking on-chain confirmation...`);
 
-      // 4. Record transaction in database
+      // 4. Normalize the quoted token amount with the mint's actual decimals.
+      const quotedOutputAmount = Number(liveQuote.outAmount) / (10 ** liveQuote.outputDecimals);
+      if (!Number.isFinite(quotedOutputAmount) || quotedOutputAmount <= 0) {
+        throw new Error("Jupiter returned an invalid output amount; transaction was broadcast but could not be safely recorded.");
+      }
+
+      // Store normalized UI amounts for both buy (SOL -> token) and sell (token -> SOL).
       await apiRequest("/api/swap/track", {
         method: "POST",
         body: JSON.stringify({
           signature,
           walletAddress: phantomAddress,
-          inputMint: "So11111111111111111111111111111111111111112",
-          outputMint: liveSwapMint,
+          inputMint: liveQuote.inputMint,
+          outputMint: liveQuote.outputMint,
           inputAmount: Number(liveSwapAmount),
-          outputAmount: Number(liveQuote.outAmount) / (10 ** (liveQuote.decimals || 6)),
+          outputAmount: quotedOutputAmount,
           slippageBps: slippageToleranceBps,
           priceImpactPct: liveQuote.priceImpactPct,
           routePlan: liveQuote.routePlan,
@@ -644,7 +699,7 @@ export default function Home() {
     }
   }
 
-  // Filtered tokens
+  // Filtered tokens: each discovery view has its own meaningful sort order.
   const filteredTokens = tokens.filter(t => {
     if (search.trim()) {
       const q = search.toLowerCase();
@@ -654,20 +709,114 @@ export default function Home() {
       if (!matchName && !matchSymbol && !matchMint) return false;
     }
     if (launchpadFilter !== "all" && t.launchpad !== launchpadFilter) return false;
+    if (riskFilter !== "all" && t.risk_score == null) return false;
     if (riskFilter === "low" && Number(t.risk_score) >= 40) return false;
     if (riskFilter === "medium" && (Number(t.risk_score) < 40 || Number(t.risk_score) >= 70)) return false;
     if (riskFilter === "high" && Number(t.risk_score) < 70) return false;
     return true;
+  }).sort((a, b) => {
+    if (tab === "launches") return new Date(b.observed_at || 0).getTime() - new Date(a.observed_at || 0).getTime();
+    if (tab === "trending") return Number(b.momentum_score ?? -1) - Number(a.momentum_score ?? -1);
+    return Number(b.volume_1h_usd ?? 0) - Number(a.volume_1h_usd ?? 0);
   });
 
   const cash = portfolio?.cash_balance ?? overview?.portfolio?.cash_balance ?? 100;
   const equity = portfolio?.total_equity_usd ?? overview?.portfolio?.total_equity_usd ?? cash;
+
+  const workspaceMeta: Record<string, { eyebrow: string; title: string; description: string; metrics: Array<{ label: string; value: string; detail: string }> }> = {
+    overview: { eyebrow: "COMMAND CENTRE", title: "Market discovery", description: "A consolidated view of newly observed Solana assets, market momentum and risk signals.", metrics: [
+      { label: "Tracked assets", value: String(tokens.length), detail: "Observed token mints" },
+      { label: "Active narratives", value: String(narratives.length), detail: "Tracked social themes" },
+      { label: "Open signals", value: String(breakoutSignals.length), detail: "Breakout detections" },
+      { label: "Portfolio equity", value: money(equity), detail: "Current selected mode" },
+    ] },
+    discovery: { eyebrow: "DISCOVERY / MULTI-SOURCE INTELLIGENCE", title: "Unconventional discovery", description: "Find early candidates through raw chain activity, wallet relationships, liquidity changes, social narratives, launchpad migration and trading-route evidence.", metrics: [
+      { label: "Evidence-backed candidates", value: String(discoveryCandidates.length), detail: "Stored in the discovery registry" },
+      { label: "Emerging narratives", value: String(emergingNarratives.length), detail: "Terms seen before token matching" },
+      { label: "Reporting sources", value: String(discoverySources.length), detail: "Includes disabled and partial sources" },
+    ] },
+    launches: { eyebrow: "DISCOVERY / NEW PAIRS", title: "New launch monitor", description: "Review newly discovered mints, liquidity, venue and early risk evidence before considering an entry.", metrics: [
+      { label: "Observed launches", value: String(tokens.filter(t => t.launchpad).length), detail: "With venue attribution" },
+      { label: "High risk", value: String(tokens.filter(t => Number(t.risk_score) >= 70).length), detail: "Risk score ≥ 70" },
+      { label: "Unknown risk", value: String(tokens.filter(t => t.risk_status === "partial" || t.risk_score == null).length), detail: "Incomplete evidence" },
+    ] },
+    trending: { eyebrow: "DISCOVERY / MOMENTUM", title: "Trending token monitor", description: "Sort the observed market by momentum and inspect whether activity is supported by liquidity and risk evidence.", metrics: [
+      { label: "Tracked assets", value: String(tokens.length), detail: "Current token set" },
+      { label: "Strong momentum", value: String(tokens.filter(t => Number(t.momentum_score) >= 70).length), detail: "Momentum score ≥ 70" },
+      { label: "High risk", value: String(tokens.filter(t => Number(t.risk_score) >= 70).length), detail: "Keep risk in view" },
+    ] },
+    breakouts: { eyebrow: "INTELLIGENCE / BREAKOUTS", title: "Breakout signal desk", description: "Inspect detected acceleration signals alongside their confidence, momentum and supporting evidence.", metrics: [
+      { label: "Active signals", value: String(breakoutSignals.length), detail: "Returned by Radar API" },
+      { label: "High confidence", value: String(breakoutSignals.filter(s => Number(s.confidence) >= 70).length), detail: "Confidence ≥ 70" },
+      { label: "Tracked assets", value: String(tokens.length), detail: "Market context" },
+    ] },
+    narratives: { eyebrow: "INTELLIGENCE / SOCIAL", title: "Narrative intelligence", description: "Follow social observations and narrative momentum. Source coverage depends on configured integrations.", metrics: [
+      { label: "Narratives", value: String(narratives.length), detail: "Known narrative records" },
+      { label: "Social observations", value: String(socialEvents.length), detail: "Events returned by API" },
+      { label: "Sources represented", value: String(new Set(socialEvents.map(e => e.source)).size), detail: "Distinct source labels" },
+    ] },
+    wallets: { eyebrow: "INTELLIGENCE / WALLET GRAPH", title: "Wallet investigation desk", description: "Investigate public addresses and inspect historical token involvement. Shared activity is an indicator, not proof of coordination.", metrics: [
+      { label: "Wallet queried", value: walletHistoryData?.wallet ? "Loaded" : "—", detail: "Current investigation" },
+      { label: "Tokens involved", value: String(walletHistoryData?.tokensInvolved?.length || 0), detail: "Returned history" },
+      { label: "Relationships", value: String(walletHistoryData?.relationships?.length || 0), detail: "Returned links" },
+    ] },
+    risk: { eyebrow: "INTELLIGENCE / SECURITY", title: "Token risk review", description: "Prioritise verified evidence, explicit unknowns and sellability limitations. A missing check is not a clean bill of health.", metrics: [
+      { label: "High risk", value: String(tokens.filter(t => Number(t.risk_score) >= 70).length), detail: "Risk score ≥ 70" },
+      { label: "Partial assessments", value: String(tokens.filter(t => t.risk_status === "partial").length), detail: "Evidence incomplete" },
+      { label: "Tokens reviewed", value: String(tokens.length), detail: "Current token set" },
+    ] },
+    paper: { eyebrow: "EXECUTION / SIMULATION", title: "Paper trading terminal", description: "Practice with virtual funds and observed market prices. Simulation results are not live trading performance.", metrics: [
+      { label: "Virtual equity", value: money(equity), detail: "Current simulation value" },
+      { label: "Open positions", value: String(portfolio?.positions?.filter(p => p.status === "open").length || 0), detail: "Current paper positions" },
+      { label: "Recorded trades", value: String(portfolio?.total_trades || 0), detail: "Current portfolio history" },
+    ] },
+    live_swap: { eyebrow: "EXECUTION / PHANTOM", title: "Non-custodial swap terminal", description: "Review quotes and transaction details before signing in Phantom. Nothing is sent until you approve it in your wallet.", metrics: [
+      { label: "Wallet", value: phantomAddress ? "Connected" : "Not connected", detail: "Phantom session" },
+      { label: "SOL balance", value: solBalance == null ? "—" : solBalance.toFixed(4), detail: "Confirmed wallet balance" },
+      { label: "Quote", value: liveQuote ? "Available" : "Not requested", detail: "Current quote state" },
+    ] },
+    portfolio: { eyebrow: "ANALYTICS / PERFORMANCE", title: "Portfolio analytics", description: "Review portfolio equity, realised and unrealised performance, positions and execution history.", metrics: [
+      { label: "Equity", value: money(equity), detail: "Current portfolio value" },
+      { label: "Realised PnL", value: money(portfolio?.realized_pnl_usd), detail: "Closed trade result" },
+      { label: "Win rate", value: portfolio ? `${Number(portfolio.win_rate_pct).toFixed(1)}%` : "—", detail: "Recorded outcomes" },
+    ] },
+    alerts: { eyebrow: "INTELLIGENCE / ALERTS", title: "Security alert centre", description: "Review risk and system alerts with severity, timestamps and delivery status.", metrics: [
+      { label: "Total alerts", value: String(alerts.length), detail: "Returned alert records" },
+      { label: "Critical", value: String(alerts.filter(a => a.severity === "critical").length), detail: "Highest severity" },
+      { label: "Warnings", value: String(alerts.filter(a => a.severity === "warning").length), detail: "Require review" },
+    ] },
+    backtesting: { eyebrow: "ANALYTICS / VALIDATION", title: "Strategy research lab", description: "Evaluate strategies against recorded historical snapshots. Results depend on data coverage and must not be treated as a forecast.", metrics: [
+      { label: "Backtest runs", value: String(backtestRuns.length), detail: "Stored strategy runs" },
+      { label: "Historical trades", value: String(backtestRuns.reduce((n, r) => n + Number(r.total_trades || 0), 0)), detail: "Across returned runs" },
+      { label: "Data coverage", value: backtestRuns.length ? "Available" : "Not yet run", detail: "Historical result set" },
+    ] },
+    providers: { eyebrow: "SYSTEM / CONNECTIVITY", title: "Provider operations", description: "Check configured data providers and their reported health. Unconfigured or unknown providers are not considered healthy.", metrics: [
+      { label: "Providers", value: String(providersHealth.length), detail: "Returned provider records" },
+      { label: "Healthy", value: String(providersHealth.filter(p => p.status === "healthy").length), detail: "Reported healthy" },
+      { label: "Degraded / down", value: String(providersHealth.filter(p => p.status !== "healthy").length), detail: "Needs attention" },
+    ] },
+    settings: { eyebrow: "SYSTEM / CONFIGURATION", title: "Terminal administration", description: "Review runtime configuration and integration diagnostics. Secret values must never be displayed in the browser.", metrics: [
+      { label: "API endpoint", value: API ? "Configured" : "Missing", detail: "Frontend build setting" },
+      { label: "Diagnostics", value: envStatusData ? "Loaded" : "Not checked", detail: "Worker environment status" },
+      { label: "Spotify", value: spotifyClientId ? "Client ID set" : "Not configured", detail: "Browser playback setup" },
+    ] },
+  };
+  const activeWorkspace = workspaceMeta[tab] || workspaceMeta.overview;
+  const tokenRiskFlags = tokenDetail?.risk?.flags || [];
+  const tokenRiskUnknowns = tokenDetail?.risk?.unknowns || [];
+  const mintAuthorityActive = tokenRiskFlags.some(flag => /mint authority/i.test(flag));
+  const mintAuthorityUnknown = tokenRiskUnknowns.some(item => /mint authority/i.test(item));
+  const freezeAuthorityActive = tokenRiskFlags.some(flag => /freeze authority/i.test(flag));
+  const freezeAuthorityUnknown = tokenRiskUnknowns.some(item => /freeze authority/i.test(item));
+  const whaleConcentrationKnown = inspectedToken?.top10_holder_percent != null;
+  const whaleConcentrationHigh = whaleConcentrationKnown && Number(inspectedToken?.top10_holder_percent) > 40;
 
   const navSections = [
     {
       title: "Discovery & Radar",
       items: [
         { id: "overview", label: "Overview Feed", icon: "🛰️" },
+        { id: "discovery", label: "Unconventional Discovery", icon: "🧭" },
         { id: "launches", label: "New Launches", icon: "🚀" },
         { id: "trending", label: "Trending Tokens", icon: "🔥" },
       ],
@@ -677,6 +826,7 @@ export default function Home() {
       items: [
         { id: "breakouts", label: "Breakout Radar", icon: "⚡", count: breakoutSignals.length },
         { id: "narratives", label: "Social & Narratives", icon: "🧠" },
+        { id: "x_intel", label: "Free Social Search", icon: "𝕏" },
         { id: "wallets", label: "Wallet Investigator", icon: "👥" },
         { id: "risk", label: "Risk & Honeypots", icon: "🛡️" },
         { id: "alerts", label: "Security Alerts", icon: "🚨", count: alerts.length },
@@ -688,6 +838,9 @@ export default function Home() {
         { id: "paper", label: "Paper Simulation", icon: "🧪" },
         { id: "live_swap", label: "Phantom Live Swaps", icon: "⚡" },
         { id: "portfolio", label: "Trade Analytics", icon: "💼" },
+        { id: "pnl", label: "PnL Cards", icon: "🧾" },
+        { id: "performance", label: "Performance & Risk", icon: "🏆" },
+        { id: "streaks", label: "Streaks", icon: "🔥" },
       ],
     },
     {
@@ -730,7 +883,7 @@ export default function Home() {
                   key={item.id}
                   className={`nav-item ${tab === item.id ? "active" : ""}`}
                   title={item.label}
-                  onClick={() => setTab(item.id as any)}
+                  onClick={() => { setTab(item.id as any); setMobileOpen(false); }}
                 >
                   <span className="nav-icon">{item.icon}</span>
                   {!sidebarCollapsed && <span>{item.label}</span>}
@@ -747,7 +900,7 @@ export default function Home() {
           <div className="sidebar-footer">
             <div className="status-indicator">
               <span className="radar-dot" />
-              <span>Solana Mainnet: Operational</span>
+              <span>{API ? "Radar API: configured" : "Radar API: offline"}</span>
             </div>
           </div>
         )}
@@ -758,15 +911,11 @@ export default function Home() {
         <header className="top-header">
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <button
-              className="button outline"
-              style={{ padding: "6px 10px", fontSize: 13, display: "inline-flex" }}
-              onClick={() => {
-                if (window.innerWidth <= 960) {
-                  setMobileOpen(!mobileOpen);
-                } else {
-                  setSidebarCollapsed(!sidebarCollapsed);
-                }
-              }}
+              className="button outline mobile-menu-toggle"
+              aria-label="Open navigation"
+              aria-expanded={mobileOpen}
+              style={{ padding: "6px 10px", fontSize: 13 }}
+              onClick={() => setMobileOpen(!mobileOpen)}
             >
               ☰
             </button>
@@ -825,6 +974,20 @@ export default function Home() {
         </header>
 
         <main className="content-body">
+          <SpotifyPlayer />
+          <section className={`page-intro ${tab === "overview" ? "overview-hero" : "workspace-hero"}`}>
+            <div className="page-intro-copy">
+              <div className="page-eyebrow"><span className="radar-dot" /> {tab === "overview" ? "DEGEN RADAR / COMMAND CENTRE" : "MARKET INTELLIGENCE / WORKSPACE"}</div>
+              <h1>{tab === "overview" ? <>See the signal.<br/><span>Move before the crowd.</span></> : navSections.flatMap(group => group.items).find(item => item.id === tab)?.label || "Solana Terminal"}</h1>
+              <p>{tab === "overview" ? "A live intelligence workspace for discovering early launches, measuring momentum, tracing wallet behaviour and managing risk across Solana." : `Focused workspace for ${navSections.flatMap(group => group.items).find(item => item.id === tab)?.label?.toLowerCase() || "market intelligence"}. Review evidence, inspect signals and take action with clear risk context.`}</p>
+              <div className="hero-capabilities"><span>ON-CHAIN SIGNALS</span><i/><span>WALLET INTELLIGENCE</span><i/><span>RISK-FIRST EXECUTION</span></div>
+            </div>
+            <div className="hero-radar-visual" aria-hidden="true"><div className="radar-ring ring-one"/><div className="radar-ring ring-two"/><div className="radar-ring ring-three"/><div className="radar-crosshair"/><div className="radar-sweep"/><span className="radar-center-dot"/><span className="radar-point point-a"/><span className="radar-point point-b"/><span className="radar-point point-c"/><div className="radar-readout"><b>{API ? "API CONFIGURED" : "LOCAL / OFFLINE"}</b><small>RADAR CORE · SOLANA</small></div></div>
+            <div className="page-intro-status">
+              <span className="status-pulse" />
+              <div><strong>{API ? "API endpoint configured" : "API connection required"}</strong><small>{API ? "Waiting for live service response" : "Connect the Cloudflare Worker to load live data"}</small></div>
+            </div>
+          </section>
           {/* Notices */}
           {error && (
             <div className="notice error">
@@ -833,23 +996,23 @@ export default function Home() {
           )}
           {message && <div className="notice success">{message}</div>}
 
-          {/* Top Summary Metrics */}
-          <section className="grid">
+          {/* Overview command metrics */}
+          {tab === "overview" && <section className="grid overview-metrics">
             <article className="panel">
               <div className="muted small">Tracked Solana Tokens</div>
-              <div className="metric">{overview?.counts.tokens ?? tokens.length}</div>
+              <div className="metric">{overview?.counts.tokens ?? tokens.length}</div><div className="metric-sparkline" aria-hidden="true"><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/></div>
               <div className="muted small">Deduplicated on-chain mints</div>
             </article>
 
             <article className="panel">
               <div className="muted small">Active Meme Narratives</div>
-              <div className="metric">{overview?.counts.narratives ?? narratives.length}</div>
+              <div className="metric">{overview?.counts.narratives ?? narratives.length}</div><div className="metric-caption">Narrative velocity <b>TRACKING</b></div>
               <div className="muted small">Multi-platform viral tracking</div>
             </article>
 
             <article className="panel">
               <div className="muted small">Breakouts & Alerts Today</div>
-              <div className="metric">{breakoutSignals.length + alerts.length}</div>
+              <div className="metric">{breakoutSignals.length + alerts.length}</div><div className="metric-caption">Signal feed <b>LIVE MONITOR</b></div>
               <div className="muted small">{breakoutSignals.length} breakouts · {alerts.length} risk alerts</div>
             </article>
 
@@ -870,15 +1033,75 @@ export default function Home() {
                   : "Mainnet-Beta Non-Custodial"}
               </div>
             </article>
-          </section>
+          </section>}
+
+          {tab === "overview" && <section className="grid overview-metrics streak-mini-row" style={{marginTop:14}}>
+            <button className="panel" onClick={() => setTab("streaks")} style={{textAlign:"left",cursor:"pointer",border:"1px solid rgba(56,189,248,.42)"}}>
+              <div className="muted small">🔵 LOGIN STREAK</div><div className="metric">{streakSummary?.activityStreak?.current ?? 0} days</div><div className="muted small">Longest {streakSummary?.activityStreak?.longest ?? 0} days · View all streaks →</div>
+            </button>
+            <button className="panel" onClick={() => setTab("streaks")} style={{textAlign:"left",cursor:"pointer",border:"1px solid rgba(34,197,94,.45)"}}>
+              <div className="muted small" style={{color:"#4ade80"}}>🟢 WINNING STREAK</div><div className="metric" style={{color:"#4ade80"}}>{streakSummary?.tradeStreak?.currentType === "win" ? streakSummary?.tradeStreak?.current : 0}</div><div className="muted small">Longest {streakSummary?.tradeStreak?.longestWinning ?? 0} wins</div>
+            </button>
+            <button className="panel" onClick={() => setTab("streaks")} style={{textAlign:"left",cursor:"pointer",border:"1px solid rgba(248,113,113,.45)"}}>
+              <div className="muted small" style={{color:"#f87171"}}>🔴 LOSING STREAK</div><div className="metric" style={{color:"#f87171"}}>{streakSummary?.tradeStreak?.currentType === "loss" ? streakSummary?.tradeStreak?.current : 0}</div><div className="muted small">Longest {streakSummary?.tradeStreak?.longestLosing ?? 0} losses</div>
+            </button>
+          </section>}
 
           {/* Main Terminal Workspace */}
-          <section className="panel section">
+          <section className={`panel section terminal-workspace tab-${tab}`}>
+        <div className="workspace-topline"><div><span className="workspace-kicker">{activeWorkspace.eyebrow}</span><h2>{activeWorkspace.title}</h2><p className="workspace-description">{activeWorkspace.description}</p></div><div className="workspace-meta"><span className="workspace-live-dot"/>{API ? "API CONFIGURED" : "API OFFLINE"}</div></div>
+        {tab !== "overview" && <div className="workspace-metrics">{activeWorkspace.metrics.map((metric, index) => <article className="workspace-metric-card" key={metric.label}><span>{metric.label}</span><strong>{metric.value}</strong><small>{metric.detail}</small><i className={`metric-accent metric-accent-${index % 3}`}/></article>)}</div>}
+
+        {tab === "discovery" && (
+          <div className="discovery-intelligence-view">
+            <div className="discovery-view-intro">
+              <div><span className="workspace-kicker">MULTI-SOURCE CANDIDATE REGISTRY</span><h3>Early discovery evidence</h3><p className="muted small">A discovery score measures accumulated evidence, not expected returns or a buy recommendation.</p></div>
+              <span className="discovery-result-count">{discoveryCandidates.length} CANDIDATES</span>
+            </div>
+            <div className="workspace-metrics">
+              {discoverySources.map(source => (
+                <article className="workspace-metric-card" key={source.source_type}>
+                  <span>{String(source.source_type).replaceAll("_"," ")}</span>
+                  <strong>{String(source.status || "unknown").toUpperCase()}</strong>
+                  <small>{source.items_seen || 0} observations · {source.last_success_at ? "last successful run recorded" : "no successful run recorded"}</small>
+                </article>
+              ))}
+            </div>
+            <div className="table-wrap discovery-table-wrap">
+              <table>
+                <thead><tr><th>Token</th><th>Discovery score</th><th>Sources</th><th>Liquidity</th><th>Risk</th><th>Last observed</th></tr></thead>
+                <tbody>
+                  {discoveryCandidates.map(candidate => (
+                    <tr key={candidate.mint}>
+                      <td><strong>{candidate.symbol || "UNKNOWN"}</strong><div className="muted small">{candidate.name || candidate.mint}</div><div className="muted tiny">{candidate.mint}</div></td>
+                      <td>{candidate.discovery_score ?? 0}</td>
+                      <td>{candidate.source_count ?? 0}<div className="muted tiny">{(JSON.parse(candidate.source_summary_json || "[]") as string[]).join(" · ")}</div></td>
+                      <td>{candidate.liquidity_usd == null ? "—" : money(candidate.liquidity_usd)}</td>
+                      <td>{candidate.risk_score == null ? "UNKNOWN" : String(candidate.risk_score) + "/100"}</td>
+                      <td>{candidate.last_discovered_at ? new Date(candidate.last_discovered_at).toLocaleString() : "—"}</td>
+                    </tr>
+                  ))}
+                  {!discoveryCandidates.length && <tr><td colSpan={6} className="muted">No evidence-backed candidates yet. Run a market scan and check that the Worker migration is applied.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+            <div className="discovery-view-intro"><div><span className="workspace-kicker">NARRATIVE BEFORE TOKEN</span><h3>Emerging meme terms</h3></div><span className="discovery-result-count">{emergingNarratives.length} TERMS</span></div>
+            <div className="table-wrap discovery-table-wrap">
+              <table>
+                <thead><tr><th>Term</th><th>Type</th><th>Mentions</th><th>Independent sources</th><th>Engagement</th><th>Last seen</th></tr></thead>
+                <tbody>
+                  {emergingNarratives.map(item => <tr key={item.normalized_term}><td><strong>{item.display_term}</strong></td><td>{item.term_type}</td><td>{item.mention_count}</td><td>{item.independent_source_count}</td><td>{Number(item.engagement_total || 0).toLocaleString()}</td><td>{item.last_seen_at ? new Date(item.last_seen_at).toLocaleString() : "—"}</td></tr>)}
+                  {!emergingNarratives.length && <tr><td colSpan={6} className="muted">No emerging terms meet the current minimum-mention threshold.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
 
         {/* SECTION 1: RADAR OVERVIEW FEED */}
         {(tab === "overview" || tab === "launches" || tab === "trending") && (
           <div>
-            <div className="filter-bar">
+            <div className="discovery-view-intro"><div><span className="workspace-kicker">{tab === "launches" ? "LATEST OBSERVATIONS" : tab === "trending" ? "MOMENTUM RANKING" : "LIVE TOKEN UNIVERSE"}</span><h3>{tab === "launches" ? "Recently observed launches" : tab === "trending" ? "Tokens ranked by momentum" : "Tracked Solana assets"}</h3></div><span className="discovery-result-count">{filteredTokens.length} MATCHING ASSETS</span></div>\n            <div className="filter-bar discovery-filter-bar">
               <input
                 placeholder="Search symbol, name, or mint address…"
                 value={search}
@@ -910,7 +1133,7 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="table-wrap">
+            <div className="table-wrap discovery-table-wrap">
               <table>
                 <thead>
                   <tr>
@@ -918,7 +1141,7 @@ export default function Home() {
                     <th>Price</th>
                     <th>Liquidity</th>
                     <th>1h Vol / 5m</th>
-                    <th>Momentum</th>
+                    <th>{tab === "launches" ? "Launch Momentum" : "Momentum Score"}</th>
                     <th>Risk Assessment</th>
                     <th>Whale %</th>
                     <th>Actions</th>
@@ -958,7 +1181,7 @@ export default function Home() {
                                 : "high"
                             }`}
                           >
-                            {t.momentum_score ?? "—"}
+                            {t.momentum_score == null ? "UNKNOWN" : t.momentum_score}
                           </span>
                         </td>
                         <td>
@@ -971,10 +1194,10 @@ export default function Home() {
                                 : "low"
                             }`}
                           >
-                            {t.risk_score ?? "—"}/100 {t.risk_status === "partial" ? "· partial" : ""}
+                            {t.risk_score == null ? "UNKNOWN" : `${t.risk_score}/100`} {t.risk_status === "partial" ? "· partial" : ""}
                           </span>
                           <div className="muted tiny" style={{ maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis" }}>
-                            {[...flags, ...unknowns].slice(0, 2).join(" · ") || "Standard indicators"}
+                            {[...flags, ...unknowns].slice(0, 2).join(" · ") || (t.risk_score == null ? "Assessment unavailable" : "No recorded flags") }
                           </div>
                         </td>
                         <td>{t.top10_holder_percent != null ? `${t.top10_holder_percent.toFixed(1)}%` : "—"}</td>
@@ -1049,7 +1272,7 @@ export default function Home() {
                   </div>
                   <div>
                     <span className="muted small">Reputation Score</span>
-                    <strong>{walletHistoryData.wallet?.reputation_score ?? 50}/100</strong>
+                    <strong>{walletHistoryData.wallet?.reputation_score ?? "—"}{walletHistoryData.wallet?.reputation_score != null ? "/100" : ""}</strong>
                   </div>
                   <div>
                     <span className="muted small">Cross-Tokens Traded / Held</span>
@@ -1405,13 +1628,16 @@ export default function Home() {
                       onChange={e => setLiveSwapMint(e.target.value)}
                     />
                   </label>
+                  <div style={{display:"flex",gap:8,marginBottom:12}}>
+                    <button className={liveSwapDirection === "buy" ? "button primary" : "button outline"} onClick={() => {setLiveSwapDirection("buy");setLiveQuote(null);setLiveSwapAmount("0.1");}}>Buy with SOL</button>
+                    <button className={liveSwapDirection === "sell" ? "button primary" : "button outline"} onClick={() => {setLiveSwapDirection("sell");setLiveQuote(null);setLiveSwapAmount("1");}}>Sell for SOL</button>
+                  </div>
                   <label>
-                    SOL Amount (Balance: {solBalance != null ? `${solBalance.toFixed(3)} SOL` : "—"})
+                    {liveSwapDirection === "buy" ? `SOL to spend (Balance: ${solBalance != null ? `${solBalance.toFixed(3)} SOL` : "—"})` : "Token amount to sell"}
                     <input
                       type="number"
-                      step="0.05"
-                      min="0.01"
-                      max={solBalance || 10}
+                      step="any"
+                      min="0.000000001"
                       value={liveSwapAmount}
                       onChange={e => setLiveSwapAmount(e.target.value)}
                     />
@@ -1419,9 +1645,9 @@ export default function Home() {
                   <button
                     className="button primary"
                     disabled={quoteBusy || !liveSwapMint.trim()}
-                    onClick={() => fetchJupiterQuote(liveSwapMint.trim(), Number(liveSwapAmount))}
+                    onClick={() => fetchJupiterQuote(liveSwapMint.trim(), Number(liveSwapAmount), liveSwapDirection)}
                   >
-                    {quoteBusy ? "Quoting…" : "Get Live Jupiter Quote"}
+                    {quoteBusy ? "Quoting…" : `Get Live ${liveSwapDirection === "buy" ? "Buy" : "Sell"} Quote`}
                   </button>
                 </div>
 
@@ -1431,13 +1657,13 @@ export default function Home() {
                     <div style={{ display: "flex", justifyContent: "space-between", margin: "12px 0" }}>
                       <div>
                         <span className="muted small">Pay:</span>
-                        <strong> {liveSwapAmount} SOL</strong>
+                        <strong> {liveSwapAmount} {liveSwapDirection === "buy" ? "SOL" : "tokens"}</strong>
                       </div>
                       <div style={{ textAlign: "right" }}>
                         <span className="muted small">Receive:</span>
                         <strong style={{ color: "#86efac" }}>
                           {" "}
-                          ~{compact(Number(liveQuote.outAmount) / (10 ** (liveQuote.decimals || 6)))} tokens
+                          ~{compact(Number(liveQuote.outAmount) / (10 ** liveQuote.outputDecimals))} {liveSwapDirection === "buy" ? "tokens" : "SOL"}
                         </strong>
                       </div>
                     </div>
@@ -1822,15 +2048,15 @@ export default function Home() {
 
               <div className="panel" style={{ padding: 16 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <strong>Optional Spotify Audio Dock</strong>
-                  <span className="tag neutral">Experimental</span>
+                  <strong>Spotify Streaming Player</strong>
+                  <span className="tag neutral">OAuth / Premium</span>
                 </div>
                 <div style={{ marginTop: 12, fontSize: 12 }}>
                   <p className="muted tiny" style={{ margin: "0 0 8px 0" }}>
-                    Ambient music while trading. Requires Spotify Developer Client ID (PKCE) and active Spotify Premium subscription for in-browser Web Playback SDK streaming.
+                    Connect your Spotify account to search tracks and control playback from this terminal. Requires an eligible Spotify Premium account and a registered redirect URL. Commercial playback is subject to Spotify's developer approval and terms.
                   </p>
                   <label style={{ fontSize: 11, color: "#8b99ac", display: "block" }}>
-                    Spotify Client ID (Optional):
+                    Spotify Developer Client ID:
                     <input
                       placeholder="Enter Client ID from developer.spotify.com"
                       value={spotifyClientId}
@@ -1920,42 +2146,34 @@ export default function Home() {
             <h3>Evidence-Based Security Audit</h3>
             <div className="audit-grid">
               <div
-                className={`audit-card ${
-                  tokenDetail?.risk?.flags.some(f => f.includes("Mint authority")) ? "flag" : "pass"
-                }`}
+                className={`audit-card ${mintAuthorityActive ? "flag" : mintAuthorityUnknown || !tokenDetail ? "unknown" : "pass"}`}
               >
                 <strong>Mint Authority</strong>
                 <div>
-                  {tokenDetail?.risk?.flags.some(f => f.includes("Mint authority"))
-                    ? "❌ Active (Deployer can mint)"
-                    : "✅ Disabled / Renounced"}
+                  {mintAuthorityActive ? "Active — mint authority risk detected" : mintAuthorityUnknown || !tokenDetail ? "Not verified — evidence unavailable" : "No active mint-authority flag reported"}
                 </div>
               </div>
 
               <div
-                className={`audit-card ${
-                  tokenDetail?.risk?.flags.some(f => f.includes("Freeze authority")) ? "flag" : "pass"
-                }`}
+                className={`audit-card ${freezeAuthorityActive ? "flag" : freezeAuthorityUnknown || !tokenDetail ? "unknown" : "pass"}`}
               >
                 <strong>Freeze Authority</strong>
                 <div>
-                  {tokenDetail?.risk?.flags.some(f => f.includes("Freeze authority"))
-                    ? "❌ Active (Can freeze wallets)"
-                    : "✅ Disabled / Renounced"}
+                  {freezeAuthorityActive ? "Active — freeze authority risk detected" : freezeAuthorityUnknown || !tokenDetail ? "Not verified — evidence unavailable" : "No active freeze-authority flag reported"}
                 </div>
               </div>
 
-              <div className={`audit-card ${(inspectedToken.top10_holder_percent || 0) > 40 ? "flag" : "pass"}`}>
+              <div className={`audit-card ${!whaleConcentrationKnown ? "unknown" : whaleConcentrationHigh ? "flag" : "pass"}`}>
                 <strong>Whale Concentration</strong>
                 <div>
                   Top 10 hold: {inspectedToken.top10_holder_percent != null ? `${inspectedToken.top10_holder_percent.toFixed(1)}%` : "Not verified"}
                 </div>
               </div>
 
-              <div className="audit-card pass">
+              <div className={`audit-card ${inspectedToken.risk_score == null ? "unknown" : Number(inspectedToken.risk_score) >= 70 ? "flag" : "pass"}`}>
                 <strong>Overall Risk Heuristic</strong>
                 <div>
-                  Score: {inspectedToken.risk_score ?? "—"}/100 ({Number(inspectedToken.risk_score) >= 70 ? "HIGH" : Number(inspectedToken.risk_score) >= 40 ? "MEDIUM" : "LOW"})
+                  Score: {inspectedToken.risk_score ?? "—"}/100 ({inspectedToken.risk_score == null ? "UNKNOWN" : Number(inspectedToken.risk_score) >= 70 ? "HIGH" : Number(inspectedToken.risk_score) >= 40 ? "MEDIUM" : "LOW"})
                 </div>
               </div>
             </div>
@@ -2089,6 +2307,11 @@ export default function Home() {
           </div>
         </div>
       )}
+
+          {tab === "performance" && <PerformanceWorkspace />}
+          {tab === "streaks" && <StreaksWorkspace />}
+          {tab === "pnl" && <PnlWorkspace walletAddress={phantomAddress} />}
+          {tab === "x_intel" && <XDiscoveryWorkspace />}
 
           {/* Operational Principles Footer */}
           <footer className="muted small" style={{ marginTop: 24, textAlign: "center" }}>

@@ -342,7 +342,10 @@ export class SolanaRpcClient {
   async getParsedTransaction(signature: string): Promise<{
     signature: string;
     blockTime: number | null;
+    slot: number | null;
     transfers: Array<{ from: string; to: string; lamports: number }>;
+    programIds: string[];
+    accountKeys: string[];
   } | null> {
     try {
       const tx = await this.rpcCall<any>("getTransaction", [
@@ -352,8 +355,12 @@ export class SolanaRpcClient {
 
       if (!tx) return null;
       const transfers: Array<{ from: string; to: string; lamports: number }> = [];
-
-      const instructions = tx.transaction?.message?.instructions || [];
+      const message = tx.transaction?.message || {};
+      const topLevel = message.instructions || [];
+      const inner = (tx.meta?.innerInstructions || []).flatMap((group: any) => group.instructions || []);
+      const instructions = [...topLevel, ...inner];
+      const programIds = Array.from(new Set(instructions.map((ix: any) => ix.programId).filter((v: any): v is string => typeof v === "string")));
+      const accountKeys = (message.accountKeys || []).map((key: any) => typeof key === "string" ? key : key?.pubkey).filter((v: any): v is string => typeof v === "string");
       for (const ix of instructions) {
         if (ix.program === "system" && ix.parsed?.type === "transfer") {
           const info = ix.parsed.info;
@@ -368,7 +375,10 @@ export class SolanaRpcClient {
       return {
         signature,
         blockTime: tx.blockTime,
+        slot: Number.isFinite(Number(tx.slot)) ? Number(tx.slot) : null,
         transfers,
+        programIds,
+        accountKeys,
       };
     } catch {
       return null;
@@ -388,6 +398,79 @@ export class SolanaRpcClient {
     } catch {
       return [];
     }
+  }
+
+  /**
+   * Discover fresh SPL Token / Token-2022 mint initializations directly from program history.
+   * This is a bounded recent-signature poll, not a substitute for a paid streaming/indexing feed.
+   */
+  async discoverRecentMintInitializations(limit = 8): Promise<Array<{
+    mint: string; signature: string; slot: number | null; blockTime: number | null;
+    decimals: number | null; mintAuthority: string | null; tokenProgram: string;
+  }>> {
+    const programs = [
+      { id: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", name: "Tokenkeg" },
+      { id: "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", name: "Token-2022" },
+    ];
+    const found = new Map<string, {
+      mint: string; signature: string; slot: number | null; blockTime: number | null;
+      decimals: number | null; mintAuthority: string | null; tokenProgram: string;
+    }>();
+    for (const program of programs) {
+      const signatures = await this.rpcCall<Array<{ signature: string; slot: number; blockTime: number | null }>>(
+        "getSignaturesForAddress", [program.id, { limit: Math.max(1, Math.min(limit, 20)), commitment: "confirmed" }]
+      );
+      for (const entry of signatures || []) {
+        const tx = await this.rpcCall<any>("getTransaction", [
+          entry.signature, { encoding: "jsonParsed", maxSupportedTransactionVersion: 0, commitment: "confirmed" }
+        ]);
+        const instructions: any[] = [
+          ...(tx?.transaction?.message?.instructions || []),
+          ...((tx?.meta?.innerInstructions || []).flatMap((group: any) => group.instructions || [])),
+        ];
+        for (const instruction of instructions) {
+          const parsed = instruction?.parsed;
+          const type = String(parsed?.type || "").toLowerCase();
+          if (!["initializemint", "initializemint2"].includes(type)) continue;
+          const info = parsed?.info || {};
+          const mint = typeof info.mint === "string" ? info.mint : "";
+          if (!mint || mint.length < 32 || mint.length > 64) continue;
+          found.set(mint, {
+            mint,
+            signature: entry.signature,
+            slot: Number.isFinite(Number(entry.slot)) ? Number(entry.slot) : null,
+            blockTime: entry.blockTime ?? null,
+            decimals: Number.isInteger(Number(info.decimals)) ? Number(info.decimals) : null,
+            mintAuthority: typeof info.mintAuthority === "string" ? info.mintAuthority : null,
+            tokenProgram: program.name,
+          });
+        }
+      }
+    }
+    return Array.from(found.values());
+  }
+
+  /** Poll configured launchpad/AMM program accounts for recent transactions involving tracked mints. */
+  async getRecentProgramTransactions(programIds: string[], limit = 5): Promise<Array<{
+    programId: string; signature: string; slot: number | null; blockTime: number | null; accountKeys: string[];
+  }>> {
+    const output: Array<{programId:string;signature:string;slot:number|null;blockTime:number|null;accountKeys:string[]}> = [];
+    for (const programId of programIds.slice(0, 12)) {
+      const signatures = await this.rpcCall<Array<{signature:string;slot:number;blockTime:number|null}>>(
+        "getSignaturesForAddress",[programId,{limit:Math.max(1,Math.min(limit,10)),commitment:"confirmed"}]
+      );
+      for (const item of signatures || []) {
+        const tx = await this.rpcCall<any>("getTransaction",[
+          item.signature,{encoding:"jsonParsed",maxSupportedTransactionVersion:0,commitment:"confirmed"}
+        ]);
+        const keys = (tx?.transaction?.message?.accountKeys || [])
+          .map((key:any)=>typeof key==="string"?key:key?.pubkey)
+          .filter((value:any):value is string=>typeof value==="string");
+        output.push({programId,signature:item.signature,slot:Number.isFinite(Number(item.slot))?Number(item.slot):null,
+          blockTime:item.blockTime??null,accountKeys:keys});
+      }
+    }
+    return output;
   }
 
   async checkHealth(): Promise<ProviderHealth> {
