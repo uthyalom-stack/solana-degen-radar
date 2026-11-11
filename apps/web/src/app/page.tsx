@@ -264,6 +264,7 @@ export default function Home() {
 
   // State collections
   const [overview, setOverview] = useState<Overview | null>(null);
+  const [streakSummary, setStreakSummary] = useState<any>(null);
   const [tokens, setTokens] = useState<Token[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [narratives, setNarratives] = useState<Narrative[]>([]);
@@ -1016,6 +1017,18 @@ export default function Home() {
                   : "Mainnet-Beta Non-Custodial"}
               </div>
             </article>
+          </section>}
+
+          {tab === "overview" && <section className="grid overview-metrics streak-mini-row" style={{marginTop:14}}>
+            <button className="panel" onClick={() => setTab("streaks")} style={{textAlign:"left",cursor:"pointer",border:"1px solid rgba(56,189,248,.42)"}}>
+              <div className="muted small">🔵 LOGIN STREAK</div><div className="metric">{streakSummary?.activityStreak?.current ?? 0} days</div><div className="muted small">Longest {streakSummary?.activityStreak?.longest ?? 0} days · View all streaks →</div>
+            </button>
+            <button className="panel" onClick={() => setTab("streaks")} style={{textAlign:"left",cursor:"pointer",border:"1px solid rgba(34,197,94,.45)"}}>
+              <div className="muted small" style={{color:"#4ade80"}}>🟢 WINNING STREAK</div><div className="metric" style={{color:"#4ade80"}}>{streakSummary?.tradeStreak?.currentType === "win" ? streakSummary?.tradeStreak?.current : 0}</div><div className="muted small">Longest {streakSummary?.tradeStreak?.longestWinning ?? 0} wins</div>
+            </button>
+            <button className="panel" onClick={() => setTab("streaks")} style={{textAlign:"left",cursor:"pointer",border:"1px solid rgba(248,113,113,.45)"}}>
+              <div className="muted small" style={{color:"#f87171"}}>🔴 LOSING STREAK</div><div className="metric" style={{color:"#f87171"}}>{streakSummary?.tradeStreak?.currentType === "loss" ? streakSummary?.tradeStreak?.current : 0}</div><div className="muted small">Longest {streakSummary?.tradeStreak?.longestLosing ?? 0} losses</div>
+            </button>
           </section>}
 
           {/* Main Terminal Workspace */}
