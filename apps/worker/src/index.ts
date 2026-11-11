@@ -1296,6 +1296,12 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
           txSignature = liveTx.signature;
         }
 
+        const tokenMeta = mint
+          ? await env.DB.prepare("SELECT symbol,name FROM tokens WHERE mint=?").bind(mint).first<any>()
+          : null;
+        symbol = String(tokenMeta?.symbol || symbol || "").toUpperCase();
+        name = String(tokenMeta?.name || name || symbol);
+
         const isPublic = body.isPublic === 1 || body.isPublic === true ? 1 : 0;
 
         await env.DB.prepare(
