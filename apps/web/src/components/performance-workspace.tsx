@@ -25,6 +25,8 @@ export default function PerformanceWorkspace() {
   const [execution,setExecution]=useState<any>({side:"buy",amountUsd:25,priceUsd:0.00001,liquidityUsd:10000,slippageBps:50,feeBps:10});
   const [estimate,setEstimate]=useState<any>(null);
   const [strategies,setStrategies]=useState<any[]>([]);
+  const [strategyConfig,setStrategyConfig]=useState<any>({minMomentum:70,maxRiskScore:50,takeProfitPct:50,stopLossPct:-20,maxHoldingHours:24,tradeSizeUsd:25,initialCapitalUsd:250,slippageBps:50,feeBps:10});
+  const [backtestResult,setBacktestResult]=useState<any>(null);
   const [alerts,setAlerts]=useState<any[]>([]);
   const [status,setStatus]=useState("");
   const [error,setError]=useState("");
@@ -58,7 +60,11 @@ export default function PerformanceWorkspace() {
     catch(e:any){setError(e.message);}
   }
   async function saveStrategy() {
-    try {await request("/api/strategies",{method:"POST",body:JSON.stringify({name:"My saved strategy",description:"Saved strategy template",config:{}})});setStrategies(await request("/api/strategies"));setStatus("Strategy template saved. Open Strategy Backtesting to configure and run a test.");}
+    try {await request("/api/strategies",{method:"POST",body:JSON.stringify({name:"My saved strategy",description:"Saved reusable backtest configuration",config:strategyConfig})});setStrategies(await request("/api/strategies"));setStatus("Strategy configuration saved.");}
+    catch(e:any){setError(e.message);}
+  }
+  async function runStrategy() {
+    try {setBacktestResult(await request("/api/backtest/run",{method:"POST",body:JSON.stringify({name:"Performance Centre Strategy",...strategyConfig})}));setStatus("Backtest completed using available historical snapshots. Review dataset coverage before drawing conclusions.");}
     catch(e:any){setError(e.message);}
   }
 
@@ -118,8 +124,12 @@ export default function PerformanceWorkspace() {
 
     <section className="panel" style={{padding:20,marginBottom:16}}>
       <h3>6 · Strategy backtesting & saved templates</h3><p className="muted small">The existing Strategy Backtesting page runs tests against stored snapshots. Save a reusable template here; use that page to configure and execute the backtest.</p>
-      <button className="button outline" onClick={saveStrategy}>Save a starter strategy template</button>
-      <div className="table-wrap" style={{marginTop:12}}><table><thead><tr><th>Strategy</th><th>Description</th><th>Updated</th></tr></thead><tbody>{strategies.map(x=><tr key={x.id}><td>{x.name}</td><td>{x.description}</td><td>{x.updated_at?new Date(x.updated_at).toLocaleString():"—"}</td></tr>)}</tbody></table></div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:10}}>
+        {(["minMomentum","maxRiskScore","takeProfitPct","stopLossPct","maxHoldingHours","tradeSizeUsd","initialCapitalUsd","slippageBps","feeBps"] as const).map(k=><label key={k}>{k}<input type="number" value={strategyConfig[k]} onChange={e=>setStrategyConfig({...strategyConfig,[k]:Number(e.target.value)})}/></label>)}
+      </div>
+      <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:10}}><button className="button outline" onClick={saveStrategy}>Save configuration</button><button className="button primary" onClick={runStrategy}>Run historical backtest</button></div>
+      {backtestResult&&<div className="metric-card" style={{marginTop:12}}><strong>{backtestResult.name}: {backtestResult.totalReturnPct}% return</strong><small>{backtestResult.totalTrades} trades · {backtestResult.winRatePct}% win rate · {backtestResult.maxDrawdownPct}% max drawdown · {backtestResult.profitFactor} profit factor</small></div>}
+      <div className="table-wrap" style={{marginTop:12}}><table><thead><tr><th>Strategy</th><th>Description</th><th>Updated</th><th>Load</th></tr></thead><tbody>{strategies.map(x=><tr key={x.id}><td>{x.name}</td><td>{x.description}</td><td>{x.updated_at?new Date(x.updated_at).toLocaleString():"—"}</td><td><button className="button outline" onClick={()=>{try{setStrategyConfig({...strategyConfig,...JSON.parse(x.config_json||"{}")});}catch{setError("Saved strategy configuration could not be read");}}}>Load</button></td></tr>)}</tbody></table></div>
     </section>
 
     <section className="panel" style={{padding:20}}>
