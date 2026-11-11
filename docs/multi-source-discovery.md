@@ -14,18 +14,18 @@ The discovery system stores source-attributed evidence in D1. A candidate's sour
 | Jito/bundle analysis | Optional configured Jito tip-account transfer indicators | Tip transfers are weak clues only. They do not prove bundle membership, coordinated ownership, or malicious activity. |
 | Cross-chain capital | Optional configured bridge-program interaction monitoring | Program interaction alone does not decode bridge direction, source chain, asset, or USD value. Wormhole/deBridge message decoding/indexer data is still required. |
 | Trading-route discovery | Bounded Jupiter mint-to-SOL quote checks | A quote is not a successful execution or a guaranteed sell. Provider errors and no-route responses remain unknown. |
-| Image similarity | Exact normalized metadata image-URL reuse detection | Experimental. This is not perceptual hashing or visual embedding similarity. |
+| Image similarity | Exact normalized metadata image-URL reuse detection | Experimental. This is not perceptual hashing or visual embedding similarity. |\n| X first-caller and convergence | Multi-lane official X recent search, account metadata, exact-mint mention history, earliest observed callers and distinct-author convergence | Requires X_BEARER_TOKEN and recent-search API access. First observed by this radar is not necessarily first on X; no caller win-rate is claimed. |
 | Developer/domain/community | Website, social, Telegram and GitHub URLs extracted from token metadata; creator attribution evidence | Does not yet validate domain age, repository history, developer identity, or community authenticity. |
 
 ## D1 migration
 
-Apply migrations/0007_multi_source_discovery.sql before deploying a Worker build that uses the new discovery pipeline.
+Apply migrations/0007_multi_source_discovery.sql and migrations/0009_x_early_intelligence.sql before deploying a Worker build that uses the corresponding discovery features.
 
 ## Worker configuration
 
 Optional comma-separated configuration:
 
-- SOLANA_DISCOVERY_PROGRAM_IDS: verified launchpad/AMM program IDs to poll for recent activity.
+- X_SEARCH_QUERIES: optional newline-separated official X API v2 recent-search queries (maximum 8 custom lanes).\n- X_TRACKED_ACCOUNTS: optional comma-separated X usernames to monitor with from: searches (maximum 8).\n- SOLANA_DISCOVERY_PROGRAM_IDS: verified launchpad/AMM program IDs to poll for recent activity.
 - JITO_TIP_ACCOUNTS: verified Jito tip destination accounts. Tip activity is not bundle proof.
 - BRIDGE_PROGRAM_IDS: verified Solana bridge program IDs. Full cross-chain attribution requires bridge-specific message decoding.
 
@@ -36,7 +36,7 @@ These values are intentionally empty by default. Do not populate them with guess
 - GET /api/discovery/candidates
 - GET /api/discovery/evidence?mint=<mint>
 - GET /api/discovery/sources
-- GET /api/discovery/narratives
+- GET /api/discovery/narratives\n- GET /api/social/x/early-signals (optional ?mint=<mint>)\n- GET /api/social/x/callers
 
 ## Safety and interpretation
 
