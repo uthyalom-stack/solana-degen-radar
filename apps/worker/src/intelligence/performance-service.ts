@@ -1,5 +1,3 @@
-import type { BacktestConfig } from "@radar/shared";
-
 const now = () => new Date().toISOString();
 const uid = () => crypto.randomUUID();
 
@@ -94,9 +92,9 @@ export class PerformanceService {
   }
 
   static async saveRiskSettings(db:D1Database, sessionId:string, input:any) {
-    const daily=input.dailyLossLimitUsd==null?null:Number(input.dailyLossLimitUsd);
-    const maxPositions=input.maxOpenPositions==null?null:Math.max(1,Math.min(100,Math.floor(Number(input.maxOpenPositions))));
-    const maxSize=input.maxPositionSizeUsd==null?null:Number(input.maxPositionSizeUsd);
+    const daily=input.dailyLossLimitUsd==null||input.dailyLossLimitUsd===""?null:Number(input.dailyLossLimitUsd);
+    const maxPositions=input.maxOpenPositions==null||input.maxOpenPositions===""?null:Math.max(1,Math.min(100,Math.floor(Number(input.maxOpenPositions))));
+    const maxSize=input.maxPositionSizeUsd==null||input.maxPositionSizeUsd===""?null:Number(input.maxPositionSizeUsd);
     const cooldown=Math.max(0,Math.min(1440,Math.floor(Number(input.cooldownMinutes)||0)));
     if(daily!==null&&(!Number.isFinite(daily)||daily<=0)) throw new Error("Daily loss limit must be positive");
     if(maxSize!==null&&(!Number.isFinite(maxSize)||maxSize<=0)) throw new Error("Maximum position size must be positive");
