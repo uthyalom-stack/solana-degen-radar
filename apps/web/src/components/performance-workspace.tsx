@@ -24,6 +24,7 @@ export default function PerformanceWorkspace() {
   const [execution,setExecution]=useState<any>({side:"buy",amountUsd:25,priceUsd:0.00001,liquidityUsd:10000,slippageBps:50,feeBps:10});
   const [estimate,setEstimate]=useState<any>(null);
   const [strategies,setStrategies]=useState<any[]>([]);
+  const [alerts,setAlerts]=useState<any[]>([]);
   const [status,setStatus]=useState("");
   const [error,setError]=useState("");
   const [loading,setLoading]=useState(false);
@@ -31,11 +32,11 @@ export default function PerformanceWorkspace() {
   async function load() {
     setLoading(true);setError("");
     try {
-      const [p,j,w,r,rs,s]=await Promise.all([
+      const [p,j,w,r,rs,s,a]=await Promise.all([
         request("/api/performance"),request("/api/journal"),request("/api/wallet-leaderboard"),
-        request("/api/signals/replay?limit=100"),request("/api/risk-controls"),request("/api/strategies")
+        request("/api/signals/replay?limit=100"),request("/api/risk-controls"),request("/api/strategies"),request("/api/alerts")
       ]);
-      setPerformance(p);setJournal(j);setWallets(w);setReplay(r);setRisk(rs);setStrategies(s);setStatus("Workspace refreshed from the Worker API.");
+      setPerformance(p);setJournal(j);setWallets(w);setReplay(r);setRisk(rs);setStrategies(s);setAlerts(a);setStatus("Workspace refreshed from the Worker API.");
     } catch(e:any) {setError(e.message||"Unable to load workspace");}
     finally {setLoading(false);}
   }
@@ -101,7 +102,7 @@ export default function PerformanceWorkspace() {
 
     <section className="panel" style={{padding:20,marginBottom:16}}>
       <h3>4 · Smart alerts</h3><p className="muted small">Use the Security Alerts workspace for current alerts. Alert delivery depends on configured providers; this panel intentionally does not invent alerts or claim notification delivery.</p>
-      <p className="muted small">Current alert records: {performance?.alertCount??"Load the Security Alerts workspace to inspect records."}</p>
+      <div className="table-wrap"><table><thead><tr><th>Severity</th><th>Alert</th><th>Subject</th><th>Created</th></tr></thead><tbody>{alerts.slice(0,20).map((a:any)=><tr key={a.id}><td>{a.severity}</td><td>{a.kind}</td><td>{a.subject_id}</td><td>{a.created_at?new Date(a.created_at).toLocaleString():"—"}</td></tr>)}</tbody></table>{!alerts.length&&<div className="empty">No alert records loaded. Refresh the workspace to retrieve current alerts.</div>}</div>
     </section>
 
     <section className="panel" style={{padding:20,marginBottom:16}}>
