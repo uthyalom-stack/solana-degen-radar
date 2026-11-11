@@ -518,6 +518,19 @@ async function ingestSocialObservations(
       )
       .run();
 
+    // Record repeated X metrics snapshots even when the tweet itself was already ingested.
+    // This enables observed engagement acceleration instead of treating one-time likes as velocity.
+    if (obs.source.startsWith("x:")) {
+      const likes = num(obs.metrics?.likes) || 0;
+      const reposts = num(obs.metrics?.retweets) || 0;
+      const replies = num(obs.metrics?.replies) || 0;
+      const quotes = num(obs.metrics?.quotes) || 0;
+      const engagement = num(obs.metrics?.engagement) || 0;
+      await db.prepare(
+        "INSERT OR IGNORE INTO x_engagement_snapshots (id,tweet_id,captured_at,post_created_at,likes,reposts,replies,quotes,engagement) VALUES (?,?,?,?,?,?,?,?,?)"
+      ).bind(id(), obs.sourceId, now(), observed, likes, reposts, replies, quotes, engagement).run();
+    }
+
     if (!insertRes.meta.changes) continue;
     inserted++;
 
@@ -979,7 +992,7 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
       const mint = String(url.searchParams.get("mint") || "").trim();
       if (mint) {
         const mentions = await env.DB.prepare(
-          "SELECT tweet_id,author_id,username,observed_at,url,engagement,likes,reposts,replies,followers,account_created_at,verified,query_type,text_snippet FROM x_mint_mentions WHERE mint=? ORDER BY observed_at ASC LIMIT 200"
+          "SELECT m.tweet_id,m.author_id,m.username,m.observed_at,m.url,m.engagement,m.likes,m.reposts,m.replies,m.followers,m.account_created_at,m.verified,m.query_type,m.text_snippet,(SELECT MIN(captured_at) FROM x_engagement_snapshots e WHERE e.tweet_id=m.tweet_id) AS first_metrics_capture,(SELECT MAX(captured_at) FROM x_engagement_snapshots e WHERE e.tweet_id=m.tweet_id) AS latest_metrics_capture,(SELECT engagement FROM x_engagement_snapshots e WHERE e.tweet_id=m.tweet_id ORDER BY captured_at ASC LIMIT 1) AS initial_engagement,(SELECT engagement FROM x_engagement_snapshots e WHERE e.tweet_id=m.tweet_id ORDER BY captured_at DESC LIMIT 1) AS latest_engagement FROM x_mint_mentions m WHERE m.mint=? ORDER BY m.observed_at ASC LIMIT 200"
         ).bind(mint).all<any>();
         const summary = await env.DB.prepare(
           "SELECT COUNT(*) AS mentions,COUNT(DISTINCT author_id) AS unique_callers,MIN(observed_at) AS first_observed_at,MAX(observed_at) AS last_observed_at,COALESCE(SUM(engagement),0) AS engagement FROM x_mint_mentions WHERE mint=?"
