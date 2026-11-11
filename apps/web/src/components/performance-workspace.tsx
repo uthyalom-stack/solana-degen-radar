@@ -2,10 +2,11 @@
 
 import { useState } from "react";
 
-const API = process.env.NEXT_PUBLIC_RADAR_API_URL || process.env.NEXT_PUBLIC_RADAR_API_URL;
+const API = process.env.NEXT_PUBLIC_RADAR_API_URL?.replace(/\/$/, "") || "";
 async function request<T=any>(path:string, init?:RequestInit):Promise<T> {
   if (!API) throw new Error("Radar API is not configured");
-  const response=await fetch(API+path,{...init,headers:{"content-type":"application/json",...(init?.headers||{})},cache:"no-store"});
+  const secret = typeof window !== "undefined" ? window.localStorage.getItem("radar_auth_secret") || "" : "";
+  const response=await fetch(API+path,{...init,headers:{"content-type":"application/json",...(secret?{"x-radar-secret":secret}:{}),...(init?.headers||{})},credentials:"include",cache:"no-store"});
   const raw=await response.text();
   let data:any;
   try { data=raw?JSON.parse(raw):null; } catch { throw new Error("API returned a non-JSON response"); }
