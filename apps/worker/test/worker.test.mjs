@@ -165,3 +165,29 @@ test("Paper trading mark-to-market valuations reflect actual price gains and los
   assert.ok(unrealizedPlDown < 0, "Unrealized P/L should be negative on price decrease");
   assert.ok(unrealizedRoiDown < -35, "ROI should reflect price drop");
 });
+
+
+import { PerformanceService } from "../src/intelligence/performance-service.ts";
+
+test("Execution simulator increases estimated impact as liquidity decreases", () => {
+  const deep = PerformanceService.simulateExecution({
+    side: "buy", amountUsd: 100, priceUsd: 1, liquidityUsd: 100000,
+    slippageBps: 50, feeBps: 10,
+  });
+  const shallow = PerformanceService.simulateExecution({
+    side: "buy", amountUsd: 100, priceUsd: 1, liquidityUsd: 1000,
+    slippageBps: 50, feeBps: 10,
+  });
+  assert.ok(shallow.estimatedImpactUsd > deep.estimatedImpactUsd);
+  assert.ok(shallow.estimatedSlippageBps > deep.estimatedSlippageBps);
+});
+
+test("Execution simulator includes fees and adverse sell-side impact", () => {
+  const result = PerformanceService.simulateExecution({
+    side: "sell", amountUsd: 50, priceUsd: 2, liquidityUsd: 5000,
+    slippageBps: 25, feeBps: 20,
+  });
+  assert.equal(result.estimatedFeeUsd, 0.1);
+  assert.ok(result.estimatedFillPriceUsd < 2);
+  assert.ok(result.estimatedImpactUsd > 0);
+});
