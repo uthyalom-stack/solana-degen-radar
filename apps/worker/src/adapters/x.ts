@@ -61,6 +61,19 @@ export class XAdapter implements SocialAdapter {
   async fetchObservations(env: Env) {
     if (!env.X_BEARER_TOKEN) return [];
 
+    // Cron runs every five minutes; reserve a D1-backed window so X API credits are not
+    // consumed on every cron tick. Fail closed if the schedule migration is missing.
+    const intervalMinutes = Math.min(1440, Math.max(5, Number(env.X_SCAN_INTERVAL_MINUTES) || 15));
+    try {
+      const reservation = await env.DB.prepare(
+        "INSERT INTO x_search_schedule (id,last_started_at) VALUES ('x_recent_search',?) ON CONFLICT(id) DO UPDATE SET last_started_at=excluded.last_started_at WHERE (julianday(excluded.last_started_at)-julianday(x_search_schedule.last_started_at))*1440 >= ? RETURNING id"
+      ).bind(new Date().toISOString(), intervalMinutes).first<{ id: string }>();
+      if (!reservation) return [];
+    } catch (error) {
+      console.error("X search cooldown unavailable; skipping X scan:", error);
+      return [];
+    }
+
     const observations: Array<{
       source: string;
       sourceId: string;
