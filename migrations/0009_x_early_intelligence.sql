@@ -49,3 +49,9 @@ CREATE TABLE IF NOT EXISTS x_engagement_snapshots (
   UNIQUE(tweet_id, captured_at)
 );
 CREATE INDEX IF NOT EXISTS idx_x_engagement_tweet_time ON x_engagement_snapshots(tweet_id, captured_at DESC);
+
+-- A D1-backed cooldown prevents every five-minute Worker cron from spending X API credits.
+CREATE TABLE IF NOT EXISTS x_search_schedule (
+  id TEXT PRIMARY KEY CHECK (id = 'x_recent_search'),
+  last_started_at TEXT NOT NULL
+);
