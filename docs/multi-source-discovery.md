@@ -27,7 +27,7 @@ Apply migrations/0007_multi_source_discovery.sql and migrations/0009_x_early_int
 Optional Worker configuration:
 
 - X_SEARCH_QUERIES: optional newline-separated official X API v2 recent-search queries (maximum 4 custom lanes).
-- X_TRACKED_ACCOUNTS: optional comma-separated X usernames to monitor with from: searches (maximum 8 usernames; queried together in one lane).
+- X_TRACKED_ACCOUNTS: optional comma-separated X usernames to monitor with from: searches (maximum 8 usernames; queried together in one lane).\n- X_SCAN_INTERVAL_MINUTES: minimum minutes between X recent-search scans (default 15; bounded from 5 to 1440). The five-minute Worker cron does not call X on every tick.
 - SOLANA_DISCOVERY_PROGRAM_IDS: verified launchpad/AMM program IDs to poll for recent activity.
 - JITO_TIP_ACCOUNTS: verified Jito tip destination accounts. Tip activity is not bundle proof.
 - BRIDGE_PROGRAM_IDS: verified Solana bridge program IDs. Full cross-chain attribution requires bridge-specific message decoding.
