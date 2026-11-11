@@ -37,7 +37,7 @@ export class XAdapter implements SocialAdapter {
       .split(/\r?\n/)
       .map(value => value.trim())
       .filter(Boolean)
-      .slice(0, 8);
+      .slice(0, 4);
 
     const base = configured.length ? configured.map((query, i) => ({ type: `custom_${i + 1}`, query })) : [
       { type: "launch_links", query: '(pump.fun OR pumpportal) (solana OR $SOL) -is:retweet lang:en' },
@@ -51,10 +51,11 @@ export class XAdapter implements SocialAdapter {
       .map(value => value.trim().replace(/^@/, ""))
       .filter(value => /^[A-Za-z0-9_]{1,15}$/.test(value))
       .slice(0, 8);
-    for (const username of tracked) {
-      base.push({ type: "tracked_caller", query: `from:${username} (solana OR $SOL OR pump.fun) -is:retweet` });
+    if (tracked.length) {
+      const authors = tracked.map(username => "from:" + username).join(" OR ");
+      base.push({ type: "tracked_callers", query: "(" + authors + ") (solana OR $SOL OR pump.fun) -is:retweet" });
     }
-    return base.slice(0, 12);
+    return base.slice(0, 5);
   }
 
   async fetchObservations(env: Env) {
@@ -84,6 +85,7 @@ export class XAdapter implements SocialAdapter {
         });
         if (!response.ok) {
           console.warn("X search lane unavailable", lane.type, response.status);
+          if (response.status === 401 || response.status === 403 || response.status === 429) break;
           continue;
         }
 
