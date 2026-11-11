@@ -66,7 +66,7 @@ export class XAdapter implements SocialAdapter {
       text: string;
       url?: string;
       observedAt: string;
-      metrics?: Record<string, number>;
+      metrics?: Record<string, unknown>;
     }> = [];
     const seen = new Set<string>();
 
@@ -110,11 +110,12 @@ export class XAdapter implements SocialAdapter {
               replies,
               quotes,
               engagement: likes + reposts * 3 + replies + quotes * 2,
-              authorId: author?.id ? Number(author.id) || 0 : 0,
+              authorId: author?.id || "",
+              username: author?.username || "",
               followers: Number(author?.public_metrics?.followers_count || 0),
               verified: author?.verified ? 1 : 0,
-              accountCreatedAt: author?.created_at ? Date.parse(author.created_at) : 0,
-              usernameHash: author?.username ? Array.from(new TextEncoder().encode(author.username.toLowerCase())).reduce((a, b) => (a * 31 + b) % 2147483647, 0) : 0,
+              accountCreatedAt: author?.created_at || "",
+              
               queryLane: lane.type === "launch_links" ? 1 : lane.type === "chart_links" ? 2 : lane.type === "contract_callouts" ? 3 : lane.type === "emerging_narratives" ? 4 : 5,
             },
           });
