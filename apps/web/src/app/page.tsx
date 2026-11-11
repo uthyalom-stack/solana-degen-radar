@@ -826,7 +826,7 @@ export default function Home() {
       items: [
         { id: "breakouts", label: "Breakout Radar", icon: "⚡", count: breakoutSignals.length },
         { id: "narratives", label: "Social & Narratives", icon: "🧠" },
-        { id: "x_intel", label: "X Early Discovery", icon: "𝕏" },
+        { id: "x_intel", label: "Free Social Search", icon: "𝕏" },
         { id: "wallets", label: "Wallet Investigator", icon: "👥" },
         { id: "risk", label: "Risk & Honeypots", icon: "🛡️" },
         { id: "alerts", label: "Security Alerts", icon: "🚨", count: alerts.length },
