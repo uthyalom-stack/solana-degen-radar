@@ -2295,7 +2295,7 @@ export default function Home() {
 
           {tab === "performance" && <PerformanceWorkspace />}
           {tab === "streaks" && <StreaksWorkspace />}
-          {tab === "pnl" && <PnlWorkspace />}
+          {tab === "pnl" && <PnlWorkspace walletAddress={phantomAddress} />}
 
           {/* Operational Principles Footer */}
           <footer className="muted small" style={{ marginTop: 24, textAlign: "center" }}>
