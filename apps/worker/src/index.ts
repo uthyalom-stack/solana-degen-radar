@@ -997,7 +997,7 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
         const summary = await env.DB.prepare(
           "SELECT COUNT(*) AS mentions,COUNT(DISTINCT author_id) AS unique_callers,MIN(observed_at) AS first_observed_at,MAX(observed_at) AS last_observed_at,COALESCE(SUM(engagement),0) AS engagement FROM x_mint_mentions WHERE mint=?"
         ).bind(mint).first<any>();
-        return json({ mint, summary, firstCallers: mentions.results || [], caveat: "First observed by this radar, not necessarily the first post on X. Historical caller skill is not inferred from mention order." });
+        return json({ mint, summary, firstCallers: mentions.results || [], caveat: "Earliest post timestamp in this radar’s captured recent-search sample, not necessarily the first post on X. Recent search is window-limited; historical caller skill is not inferred from mention order." });
       }
       const rows = await env.DB.prepare(
         "SELECT mint,COUNT(*) AS mentions,COUNT(DISTINCT author_id) AS unique_callers,MIN(observed_at) AS first_observed_at,MAX(observed_at) AS last_observed_at,COALESCE(SUM(engagement),0) AS engagement FROM x_mint_mentions WHERE julianday(observed_at)>=julianday('now','-24 hours') GROUP BY mint ORDER BY unique_callers DESC,first_observed_at ASC LIMIT 100"
