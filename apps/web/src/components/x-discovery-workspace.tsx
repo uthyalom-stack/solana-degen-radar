@@ -68,7 +68,7 @@ export default function XDiscoveryWorkspace() {
       {error && <p className="risk high" role="alert">{error}</p>}
       <div className="grid overview-metrics" style={{ marginTop: 16 }}>
         <div className="metric-card"><span>Mint candidates · 24h</span><strong>{feed.length}</strong><small>With at least one captured mint mention</small></div>
-        <div className="metric-card"><span>Observed X accounts</span><strong>{callers.length}</strong><small>Accounts seen by this radar</small></div>
+        <div className="metric-card"><span>Top observed X accounts</span><strong>{callers.length}</strong><small>Up to 100 accounts seen by this radar</small></div>
         <div className="metric-card"><span>Highest convergence</span><strong>{feed[0]?.unique_callers ?? "—"}</strong><small>Distinct observed authors for one mint</small></div>
         <div className="metric-card"><span>Selected mint mentions</span><strong>{mintData?.summary?.mentions ?? "—"}</strong><small>Captured exact-contract mentions</small></div>
       </div>
@@ -93,9 +93,9 @@ export default function XDiscoveryWorkspace() {
         <button className="button primary" disabled={loading || !mintInput.trim()} onClick={() => void inspectMint()}>Find first callers</button>
       </div>
       {mintData && <><p className="muted small" style={{ marginTop: 12 }}>{selectedMint} · {mintData.summary?.unique_callers ?? 0} unique callers · {mintData.summary?.mentions ?? 0} captured mentions</p>
-        <div className="table-wrap"><table><thead><tr><th>Observed at</th><th>Account</th><th>Followers</th><th>Engagement</th><th>Account created</th><th>Post</th></tr></thead>
-          <tbody>{(mintData.firstCallers || []).map((row: any) => <tr key={row.tweet_id + row.mint}>
-            <td>{date(row.observed_at)}</td><td>{row.username ? "@" + row.username : row.author_id || "Unknown"}</td><td>{compact(row.followers)}</td><td>{compact(row.engagement)}</td><td>{date(row.account_created_at)}</td><td>{row.url ? <a href={row.url} target="_blank" rel="noreferrer">Open post ↗</a> : "—"}</td>
+        <div className="table-wrap"><table><thead><tr><th>Observed at</th><th>Account</th><th>Followers</th><th>Engagement change</th><th>Account created</th><th>Post</th></tr></thead>
+          <tbody>{(mintData.firstCallers || []).map((row: any) => <tr key={row.tweet_id + "-" + (row.author_id || "")}>
+            <td>{date(row.observed_at)}</td><td>{row.username ? "@" + row.username : row.author_id || "Unknown"}</td><td>{compact(row.followers)}</td><td>{row.initial_engagement == null || row.latest_engagement == null ? "—" : `${compact(row.initial_engagement)} → ${compact(row.latest_engagement)}`}</td><td>{date(row.account_created_at)}</td><td>{row.url ? <a href={row.url} target="_blank" rel="noreferrer">Open post ↗</a> : "—"}</td>
           </tr>)}</tbody></table>{!mintData.firstCallers?.length && <div className="empty">No captured X posts mention this mint.</div>}</div>
       </>}
     </section>
