@@ -33,7 +33,9 @@ export default function VerifyPnlPage({ params }: { params: Promise<{ id: string
   useEffect(() => {
     async function fetchCard() {
       try {
-        const res = await fetch(`/api/pnl/card/${encodeURIComponent(id)}`);
+        const apiBase = process.env.NEXT_PUBLIC_RADAR_API_URL?.replace(/\/$/, "") || "";
+        if (!apiBase) throw new Error("Radar API is not configured for public PnL verification.");
+        const res = await fetch(`${apiBase}/api/pnl/card/${encodeURIComponent(id)}`, { cache: "no-store" });
         if (!res.ok) {
           throw new Error(`Record verification failed (HTTP ${res.status})`);
         }
