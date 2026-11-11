@@ -22,6 +22,7 @@ import { PaperTradingEngine } from "./paper-trading";
 import { WalletIntelligenceEngine } from "./intelligence/wallet-intel";
 import { BreakoutEngine } from "./intelligence/breakout";
 import { BacktestService } from "./intelligence/backtest-service";
+import { PerformanceService } from "./intelligence/performance-service";
 import { LiveSwapService } from "./trading/live-swap-service";
 import type { Env, Pair, SocialAdapter } from "./types";
 
@@ -958,6 +959,8 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
       const body: any = await parseJson(request);
       const sessionId = body.sessionId || "default";
       try {
+        const riskCheck = await PerformanceService.checkPaperBuyRisk(env.DB, String(sessionId), Number(body.usd));
+        if (!riskCheck.allowed) throw new ApiError((riskCheck.violations || []).join("; "), 429);
         const buyResult = await PaperTradingEngine.buy(
           env.DB,
           env,
@@ -1099,6 +1102,57 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
 
     if (path === "/api/backtest/runs" && method === "GET") {
       return json(await BacktestService.getRecentRuns(env.DB));
+    }
+
+    // 13A. Performance, journaling, streaks, replay, strategy library and risk controls.
+    if (path === "/api/performance" && method === "GET") {
+      const sessionId = url.searchParams.get("sessionId") || "default";
+      return json(await PerformanceService.getPerformance(env.DB, sessionId));
+    }
+    if (path === "/api/activity/record" && method === "POST") {
+      const body:any = await parseJson(request);
+      return json(await PerformanceService.recordActivity(env.DB, String(body.sessionId || "default"), String(body.activityType || "review"), body.referenceId));
+    }
+    if (path === "/api/journal" && method === "GET") {
+      const sessionId = url.searchParams.get("sessionId") || "default";
+      return json(await PerformanceService.listJournal(env.DB, sessionId));
+    }
+    if (path === "/api/journal" && method === "POST") {
+      const body:any = await parseJson(request);
+      return json(await PerformanceService.saveJournal(env.DB, String(body.sessionId || "default"), body), 201);
+    }
+    if (path === "/api/risk-controls" && method === "GET") {
+      const sessionId = url.searchParams.get("sessionId") || "default";
+      return json(await PerformanceService.getRiskSettings(env.DB, sessionId));
+    }
+    if (path === "/api/risk-controls" && method === "POST") {
+      const body:any = await parseJson(request);
+      return json(await PerformanceService.saveRiskSettings(env.DB, String(body.sessionId || "default"), body));
+    }
+    if (path === "/api/wallet-leaderboard" && method === "GET") {
+      return json(await PerformanceService.getWalletLeaderboard(env.DB, Math.min(100, Math.max(1, Number(url.searchParams.get("limit")) || 50))));
+    }
+    if (path === "/api/signals/replay" && method === "GET") {
+      const mint = url.searchParams.get("mint") || undefined;
+      return json(await PerformanceService.replaySignals(env.DB, mint, Math.min(500, Math.max(1, Number(url.searchParams.get("limit")) || 200))));
+    }
+    if (path === "/api/execution/simulate" && method === "POST") {
+      const body:any = await parseJson(request);
+      return json(PerformanceService.simulateExecution({
+        side: body.side === "sell" ? "sell" : "buy",
+        amountUsd: Number(body.amountUsd),
+        priceUsd: Number(body.priceUsd),
+        liquidityUsd: Number(body.liquidityUsd),
+        slippageBps: Math.max(0, Math.min(5000, Number(body.slippageBps) || 50)),
+        feeBps: Math.max(0, Math.min(500, Number(body.feeBps) || 10)),
+      }));
+    }
+    if (path === "/api/strategies" && method === "GET") {
+      return json(await PerformanceService.listStrategies(env.DB, url.searchParams.get("sessionId") || "default"));
+    }
+    if (path === "/api/strategies" && method === "POST") {
+      const body:any = await parseJson(request);
+      return json(await PerformanceService.saveStrategy(env.DB, String(body.sessionId || "default"), body), 201);
     }
 
     // 14. Direct Jupiter Swap Lifecycle (Phantom Live Trading)
