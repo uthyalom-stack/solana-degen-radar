@@ -6,6 +6,7 @@ import SpotifyPlayer from "../components/spotify-player";
 import PerformanceWorkspace from "../components/performance-workspace";
 import StreaksWorkspace from "../components/streaks-workspace";
 import PnlWorkspace from "../components/pnl-workspace";
+import XDiscoveryWorkspace from "../components/x-discovery-workspace";
 
 type Token = {
   mint: string;
@@ -262,6 +263,7 @@ export default function Home() {
     | "performance"
     | "streaks"
     | "pnl"
+    | "x_intel"
   >("overview");
 
   // State collections
@@ -820,6 +822,7 @@ export default function Home() {
       items: [
         { id: "breakouts", label: "Breakout Radar", icon: "⚡", count: breakoutSignals.length },
         { id: "narratives", label: "Social & Narratives", icon: "🧠" },
+        { id: "x_intel", label: "X Early Discovery", icon: "𝕏" },
         { id: "wallets", label: "Wallet Investigator", icon: "👥" },
         { id: "risk", label: "Risk & Honeypots", icon: "🛡️" },
         { id: "alerts", label: "Security Alerts", icon: "🚨", count: alerts.length },
@@ -2304,6 +2307,7 @@ export default function Home() {
           {tab === "performance" && <PerformanceWorkspace />}
           {tab === "streaks" && <StreaksWorkspace />}
           {tab === "pnl" && <PnlWorkspace walletAddress={phantomAddress} />}
+          {tab === "x_intel" && <XDiscoveryWorkspace />}
 
           {/* Operational Principles Footer */}
           <footer className="muted small" style={{ marginTop: 24, textAlign: "center" }}>
