@@ -142,7 +142,10 @@ export class PerformanceService {
     const rows=await db.prepare(`SELECT s.mint,t.symbol,s.observed_at,s.price_usd,s.momentum_score,r.risk_score,
       (SELECT COUNT(*) FROM alerts a WHERE a.subject_id=s.mint AND a.created_at<=s.observed_at) alerts_at_time
       FROM token_snapshots s JOIN tokens t ON t.mint=s.mint
-      LEFT JOIN risk_assessments r ON r.mint=s.mint AND r.assessed_at<=s.observed_at
+      LEFT JOIN risk_assessments r ON r.id=(
+        SELECT rx.id FROM risk_assessments rx WHERE rx.mint=s.mint AND rx.assessed_at<=s.observed_at
+        ORDER BY rx.assessed_at DESC LIMIT 1
+      )
       WHERE s.price_usd>0 AND (? IS NULL OR s.mint=?)
       ORDER BY s.observed_at DESC LIMIT ?`).bind(mint||null,mint||null,limit).all<any>();
     return rows.results||[];
