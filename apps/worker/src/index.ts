@@ -1264,21 +1264,36 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
           quantity = Number(liveTx.output_amount) || 0;
           buyPrice = invested > 0 && quantity > 0 ? invested / quantity : 0;
 
-          // Reconcile exit transaction to compute verified realized profit without trusting client numbers
+          // A buy is not a realized PnL event. Match a later, confirmed sell
+          // from the same wallet, swapping this exact token back to the original quote mint.
           const exitTx = await env.DB.prepare(
-            "SELECT * FROM live_transactions WHERE input_mint = ? AND status = 'confirmed' AND created_at > ? ORDER BY created_at ASC LIMIT 1"
-          ).bind(mint, liveTx.created_at).first<any>();
+            `SELECT * FROM live_transactions
+             WHERE wallet_address = ? AND input_mint = ? AND output_mint = ?
+               AND status = 'confirmed' AND submitted_at > ?
+             ORDER BY submitted_at ASC LIMIT 1`
+          ).bind(liveTx.wallet_address, liveTx.output_mint, liveTx.input_mint, liveTx.submitted_at).first<any>();
 
-          if (exitTx) {
-            sellPrice = Number(exitTx.output_amount) / (Number(exitTx.input_amount) || 1);
-            const exitGross = Number(exitTx.output_amount);
-            realizedPnl = exitGross - invested;
-            roiPct = invested > 0 ? (realizedPnl / invested) * 100 : 0;
-          } else {
-            sellPrice = buyPrice;
-            realizedPnl = 0;
-            roiPct = 0;
+          if (!exitTx) {
+            throw new ApiError("No matching confirmed sell transaction is recorded for this live buy yet. A buy alone has no realized PnL.", 409);
           }
+
+          const boughtQuantity = Number(liveTx.output_amount) || 0;
+          const soldQuantity = Number(exitTx.input_amount) || 0;
+          const proceeds = Number(exitTx.output_amount) || 0;
+          if (boughtQuantity <= 0 || soldQuantity <= 0 || proceeds < 0) {
+            throw new ApiError("Live swap amounts are incomplete; refusing to generate an unverified PnL card.", 409);
+          }
+
+          // Attribute cost basis proportionally for partial exits. Stored amounts must
+          // be normalized UI amounts (not raw token base units) by the swap tracker.
+          const matchedQuantity = Math.min(boughtQuantity, soldQuantity);
+          invested = (Number(liveTx.input_amount) || 0) * (matchedQuantity / boughtQuantity);
+          quantity = matchedQuantity;
+          buyPrice = invested / matchedQuantity;
+          sellPrice = proceeds / matchedQuantity;
+          realizedPnl = proceeds - invested;
+          roiPct = invested > 0 ? (realizedPnl / invested) * 100 : 0;
+          txSignature = liveTx.signature;
         }
 
         const isPublic = body.isPublic === 1 || body.isPublic === true ? 1 : 0;
