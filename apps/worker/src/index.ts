@@ -1357,6 +1357,9 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
           if (!pos) {
             throw new ApiError("Paper position record not found in database", 404);
           }
+          if (pos.status !== "closed") {
+            throw new ApiError("A paper PnL card can only be generated after the position is fully closed", 409);
+          }
           mint = pos.mint;
           quantity = pos.quantity;
           buyPrice = pos.entry_price_usd;
