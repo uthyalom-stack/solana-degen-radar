@@ -91,10 +91,11 @@ export default function PnlWorkspace({ walletAddress }: { walletAddress?: string
   }
 
   async function copyShareLink() {
-    if (!generated?.cardId || !API) return;
+    if (!generated?.cardId || typeof window === "undefined") return;
     try {
-      await navigator.clipboard.writeText(`${API}/api/pnl/card/${generated.cardId}`);
-      setNotice("Verification link copied.");
+      const path = generated.verificationUrl || `/verify/${generated.cardId}`;
+      await navigator.clipboard.writeText(new URL(path, window.location.origin).toString());
+      setNotice("Public verification page link copied.");
     } catch { setError("Clipboard access was blocked. Copy the link shown below."); }
   }
 
@@ -172,7 +173,7 @@ export default function PnlWorkspace({ walletAddress }: { walletAddress?: string
         <div className="muted small">{generated.roiPct >= 0 ? "+" : ""}{Number(generated.roiPct).toFixed(2)}% ROI · {generated.tradeType} TRADE</div>
         <div className="muted tiny" style={{marginTop:14}}>Invested {money(generated.investedUsd)} · Generated {new Date(generated.createdAt).toLocaleString()}</div>
         <div style={{display:"flex",gap:10,flexWrap:"wrap",marginTop:16}}><button className="button outline" onClick={() => void copyShareLink()} disabled={!isPublic}>Copy verification link</button>{!isPublic && <span className="muted tiny" style={{alignSelf:"center"}}>Private card · link sharing disabled</span>}</div>
-        {isPublic && <p className="muted tiny" style={{marginTop:10,wordBreak:"break-all"}}>{API}/api/pnl/card/{generated.cardId}</p>}
+        {isPublic && <p className="muted tiny" style={{marginTop:10,wordBreak:"break-all"}}>{typeof window !== "undefined" ? new URL(generated.verificationUrl || `/verify/${generated.cardId}`, window.location.origin).toString() : generated.verificationUrl}</p>}
       </div>}
     </section>
   );
