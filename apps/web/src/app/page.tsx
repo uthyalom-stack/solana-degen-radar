@@ -393,7 +393,9 @@ export default function Home() {
 
   useEffect(() => {
     void refresh();
-    void apiRequest("/api/activity/record", { method: "POST", body: JSON.stringify({ activityType: "login" }) }).catch(() => {});
+    void apiRequest("/api/activity/record", { method: "POST", body: JSON.stringify({ activityType: "login" }) })
+      .then(() => refresh())
+      .catch(() => {});
     const timer = setInterval(() => void refresh(), 30000);
     return () => clearInterval(timer);
   }, [refresh]);
