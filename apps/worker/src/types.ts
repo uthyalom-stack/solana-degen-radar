@@ -19,6 +19,8 @@ export interface Env {
   PUMPPORTAL_STREAM: DurableObjectNamespace;
   PAPER_STARTING_BALANCE?: string;
   X_BEARER_TOKEN?: string;
+  X_SEARCH_QUERIES?: string;
+  X_TRACKED_ACCOUNTS?: string;
   REDDIT_USER_AGENT?: string;
   JITO_TIP_ACCOUNTS?: string;
   BRIDGE_PROGRAM_IDS?: string;
