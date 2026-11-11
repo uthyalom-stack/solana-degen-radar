@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { VersionedTransaction } from "@solana/web3.js";
 import SpotifyPlayer from "../components/spotify-player";
 import PerformanceWorkspace from "../components/performance-workspace";
+import StreaksWorkspace from "../components/streaks-workspace";
 
 type Token = {
   mint: string;
@@ -258,6 +259,7 @@ export default function Home() {
     | "providers"
     | "settings"
     | "performance"
+    | "streaks"
   >("overview");
 
   // State collections
@@ -821,6 +823,7 @@ export default function Home() {
         { id: "live_swap", label: "Phantom Live Swaps", icon: "⚡" },
         { id: "portfolio", label: "Trade Analytics", icon: "💼" },
         { id: "performance", label: "Performance & Risk", icon: "🏆" },
+        { id: "streaks", label: "Streaks", icon: "🔥" },
       ],
     },
     {
@@ -2274,6 +2277,7 @@ export default function Home() {
       )}
 
           {tab === "performance" && <PerformanceWorkspace />}
+          {tab === "streaks" && <StreaksWorkspace />}
 
           {/* Operational Principles Footer */}
           <footer className="muted small" style={{ marginTop: 24, textAlign: "center" }}>
