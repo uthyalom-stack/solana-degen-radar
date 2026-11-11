@@ -35,3 +35,17 @@ CREATE TABLE IF NOT EXISTS x_social_accounts (
   tweets_seen INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_x_social_accounts_username ON x_social_accounts(username);
+
+CREATE TABLE IF NOT EXISTS x_engagement_snapshots (
+  id TEXT PRIMARY KEY,
+  tweet_id TEXT NOT NULL,
+  captured_at TEXT NOT NULL,
+  post_created_at TEXT NOT NULL,
+  likes INTEGER NOT NULL DEFAULT 0,
+  reposts INTEGER NOT NULL DEFAULT 0,
+  replies INTEGER NOT NULL DEFAULT 0,
+  quotes INTEGER NOT NULL DEFAULT 0,
+  engagement REAL NOT NULL DEFAULT 0,
+  UNIQUE(tweet_id, captured_at)
+);
+CREATE INDEX IF NOT EXISTS idx_x_engagement_tweet_time ON x_engagement_snapshots(tweet_id, captured_at DESC);
