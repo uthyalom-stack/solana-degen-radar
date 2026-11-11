@@ -1280,13 +1280,13 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
           const boughtQuantity = Number(liveTx.output_amount) || 0;
           const soldQuantity = Number(exitTx.input_amount) || 0;
           const proceeds = Number(exitTx.output_amount) || 0;
-          if (boughtQuantity <= 0 || soldQuantity <= 0 || proceeds < 0) {
-            throw new ApiError("Live swap amounts are incomplete; refusing to generate an unverified PnL card.", 409);
+          if (boughtQuantity <= 0 || soldQuantity <= 0 || proceeds <= 0 || soldQuantity > boughtQuantity * 1.0001) {
+            throw new ApiError("Live swap amounts do not form a valid single-buy/sell pair; refusing to generate an unverified PnL card.", 409);
           }
 
-          // Attribute cost basis proportionally for partial exits. Stored amounts must
+          // Attribute cost basis proportionally for a partial exit. Stored amounts must
           // be normalized UI amounts (not raw token base units) by the swap tracker.
-          const matchedQuantity = Math.min(boughtQuantity, soldQuantity);
+          const matchedQuantity = soldQuantity;
           invested = (Number(liveTx.input_amount) || 0) * (matchedQuantity / boughtQuantity);
           quantity = matchedQuantity;
           buyPrice = invested / matchedQuantity;
