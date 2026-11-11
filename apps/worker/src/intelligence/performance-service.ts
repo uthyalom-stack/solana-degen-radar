@@ -55,7 +55,7 @@ export class PerformanceService {
       bestWin=Math.max(bestWin,winRun); bestLoss=Math.max(bestLoss,lossRun);
     }
     return {
-      activityStreak:{current:currentActivity,longest:bestActivity,activeDays:dates.length},
+      activityStreak:{current:currentActivity,longest:bestActivity,activeDays:dates.length,activityDays:[...new Set(dates)].sort().reverse().slice(0,90)},
       tradeStreak:{currentType:currentKind,current:outcomeRun,longestWinning:bestWin,longestLosing:bestLoss},
       tradeStats:{total:Number(recent?.total)||0,wins:Number(recent?.wins)||0,losses:Number(recent?.losses)||0,realizedPnlUsd:Number(recent?.pnl)||0},
       riskSettings:risk || {session_id:sessionId,enabled:1,daily_loss_limit_usd:null,max_open_positions:null,max_position_size_usd:null,cooldown_minutes:0},
