@@ -220,7 +220,7 @@ test("X adapter runs separate early-discovery search lanes and preserves author 
   };
 
   try {
-    const observations = await new XAdapter().fetchObservations({ X_BEARER_TOKEN: "test-token" });
+    const observations = await new XAdapter().fetchObservations({ X_BEARER_TOKEN: "test-token", DB: { prepare: () => ({ bind: () => ({ first: async () => ({ id: "x_recent_search" }) }) }) } });
     assert.equal(requests.length, 4);
     assert.equal(observations.length, 1, "duplicate tweets across search lanes should be deduplicated");
     assert.equal(observations[0].metrics.authorId, "987654321012345678");
