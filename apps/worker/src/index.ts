@@ -935,7 +935,7 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
     }
 
     // 3. Single token deep-dive
-    if (path.startsWith("/api/tokens/") && method === "GET") {
+    if (path.startsWith("/api/tokens/") && path.split("/").length === 4 && method === "GET") {
       const mint = path.split("/")[3]?.trim();
       if (!mint) throw new ApiError("Mint address required");
 
