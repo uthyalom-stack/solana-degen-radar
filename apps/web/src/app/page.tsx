@@ -620,7 +620,16 @@ export default function Home() {
       setTxStatus("confirming");
       setMessage(`Transaction broadcast! Signature: ${signature.slice(0, 8)}... Tracking on-chain confirmation...`);
 
-      // 4. Record transaction in database
+      // 4. Normalize the quoted token amount with the mint's actual decimals.
+      const mintInfo = await apiRequest<{ mint: string; decimals: number }>(
+        `/api/tokens/${encodeURIComponent(liveSwapMint)}/decimals`
+      );
+      const quotedTokenAmount = Number(liveQuote.outAmount) / (10 ** mintInfo.decimals);
+      if (!Number.isFinite(quotedTokenAmount) || quotedTokenAmount <= 0) {
+        throw new Error("Jupiter returned an invalid token amount; transaction was broadcast but could not be safely recorded.");
+      }
+
+      // 5. Record the swap with normalized UI amounts (not raw token base units).
       await apiRequest("/api/swap/track", {
         method: "POST",
         body: JSON.stringify({
@@ -629,7 +638,7 @@ export default function Home() {
           inputMint: "So11111111111111111111111111111111111111112",
           outputMint: liveSwapMint,
           inputAmount: Number(liveSwapAmount),
-          outputAmount: Number(liveQuote.outAmount) / (10 ** (liveQuote.decimals || 6)),
+          outputAmount: quotedTokenAmount,
           slippageBps: slippageToleranceBps,
           priceImpactPct: liveQuote.priceImpactPct,
           routePlan: liveQuote.routePlan,
