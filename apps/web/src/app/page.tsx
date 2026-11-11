@@ -315,7 +315,8 @@ export default function Home() {
   const [phantomAddress, setPhantomAddress] = useState<string | null>(null);
   const [solBalance, setSolBalance] = useState<number | null>(null);
   const [liveSwapMint, setLiveSwapMint] = useState("");
-  const [liveSwapAmount, setLiveSwapAmount] = useState("0.1"); // SOL
+  const [liveSwapAmount, setLiveSwapAmount] = useState("0.1");
+  const [liveSwapDirection, setLiveSwapDirection] = useState<"buy" | "sell">("buy");
   const [liveQuote, setLiveQuote] = useState<any>(null);
   const [quoteBusy, setQuoteBusy] = useState(false);
   const [swapExecuting, setSwapExecuting] = useState(false);
@@ -560,25 +561,23 @@ export default function Home() {
   }
 
   // Get Jupiter Swap Quote
-  async function fetchJupiterQuote(outputMint: string, solAmount: number) {
+  async function fetchJupiterQuote(tokenMint: string, amount: number, direction: "buy" | "sell" = liveSwapDirection) {
     setQuoteBusy(true);
     setLiveQuote(null);
     setError("");
     try {
-      const lamports = Math.floor(solAmount * 1_000_000_000);
-      let decimals = 6;
-      try {
-        const decData = await apiRequest<any>(`/api/tokens/${outputMint}/decimals`);
-        if (decData && Number.isFinite(decData.decimals)) {
-          decimals = Number(decData.decimals);
-        }
-      } catch {
-        decimals = 6;
-      }
+      if (!Number.isFinite(amount) || amount <= 0) throw new Error("Enter a positive swap amount.");
+      const tokenInfo = await apiRequest<{ decimals: number }>(`/api/tokens/${encodeURIComponent(tokenMint)}/decimals`);
+      const inputMint = direction === "buy" ? "So11111111111111111111111111111111111111112" : tokenMint;
+      const outputMint = direction === "buy" ? tokenMint : "So11111111111111111111111111111111111111112";
+      const inputDecimals = direction === "buy" ? 9 : tokenInfo.decimals;
+      const outputDecimals = direction === "buy" ? tokenInfo.decimals : 9;
+      const baseUnits = Math.floor(amount * (10 ** inputDecimals));
+      if (!Number.isSafeInteger(baseUnits) || baseUnits <= 0) throw new Error("Swap amount is outside the supported range.");
       const quote = await apiRequest<any>(
-        `/api/swap/quote?inputMint=So11111111111111111111111111111111111111112&outputMint=${outputMint}&amount=${lamports}&slippageBps=${slippageToleranceBps}`
+        `/api/swap/quote?inputMint=${encodeURIComponent(inputMint)}&outputMint=${encodeURIComponent(outputMint)}&amount=${baseUnits}&slippageBps=${slippageToleranceBps}`
       );
-      setLiveQuote({ ...quote, decimals });
+      setLiveQuote({ ...quote, inputMint, outputMint, inputDecimals, outputDecimals, decimals: outputDecimals, direction });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to fetch Jupiter swap quote");
       setLiveQuote(null);
@@ -621,24 +620,21 @@ export default function Home() {
       setMessage(`Transaction broadcast! Signature: ${signature.slice(0, 8)}... Tracking on-chain confirmation...`);
 
       // 4. Normalize the quoted token amount with the mint's actual decimals.
-      const mintInfo = await apiRequest<{ mint: string; decimals: number }>(
-        `/api/tokens/${encodeURIComponent(liveSwapMint)}/decimals`
-      );
-      const quotedTokenAmount = Number(liveQuote.outAmount) / (10 ** mintInfo.decimals);
-      if (!Number.isFinite(quotedTokenAmount) || quotedTokenAmount <= 0) {
-        throw new Error("Jupiter returned an invalid token amount; transaction was broadcast but could not be safely recorded.");
+      const quotedOutputAmount = Number(liveQuote.outAmount) / (10 ** liveQuote.outputDecimals);
+      if (!Number.isFinite(quotedOutputAmount) || quotedOutputAmount <= 0) {
+        throw new Error("Jupiter returned an invalid output amount; transaction was broadcast but could not be safely recorded.");
       }
 
-      // 5. Record the swap with normalized UI amounts (not raw token base units).
+      // Store normalized UI amounts for both buy (SOL -> token) and sell (token -> SOL).
       await apiRequest("/api/swap/track", {
         method: "POST",
         body: JSON.stringify({
           signature,
           walletAddress: phantomAddress,
-          inputMint: "So11111111111111111111111111111111111111112",
-          outputMint: liveSwapMint,
+          inputMint: liveQuote.inputMint,
+          outputMint: liveQuote.outputMint,
           inputAmount: Number(liveSwapAmount),
-          outputAmount: quotedTokenAmount,
+          outputAmount: quotedOutputAmount,
           slippageBps: slippageToleranceBps,
           priceImpactPct: liveQuote.priceImpactPct,
           routePlan: liveQuote.routePlan,
@@ -1625,13 +1621,16 @@ export default function Home() {
                       onChange={e => setLiveSwapMint(e.target.value)}
                     />
                   </label>
+                  <div style={{display:"flex",gap:8,marginBottom:12}}>
+                    <button className={liveSwapDirection === "buy" ? "button primary" : "button outline"} onClick={() => {setLiveSwapDirection("buy");setLiveQuote(null);setLiveSwapAmount("0.1");}}>Buy with SOL</button>
+                    <button className={liveSwapDirection === "sell" ? "button primary" : "button outline"} onClick={() => {setLiveSwapDirection("sell");setLiveQuote(null);setLiveSwapAmount("1");}}>Sell for SOL</button>
+                  </div>
                   <label>
-                    SOL Amount (Balance: {solBalance != null ? `${solBalance.toFixed(3)} SOL` : "—"})
+                    {liveSwapDirection === "buy" ? `SOL to spend (Balance: ${solBalance != null ? `${solBalance.toFixed(3)} SOL` : "—"})` : "Token amount to sell"}
                     <input
                       type="number"
-                      step="0.05"
-                      min="0.01"
-                      max={solBalance || 10}
+                      step="any"
+                      min="0.000000001"
                       value={liveSwapAmount}
                       onChange={e => setLiveSwapAmount(e.target.value)}
                     />
@@ -1639,9 +1638,9 @@ export default function Home() {
                   <button
                     className="button primary"
                     disabled={quoteBusy || !liveSwapMint.trim()}
-                    onClick={() => fetchJupiterQuote(liveSwapMint.trim(), Number(liveSwapAmount))}
+                    onClick={() => fetchJupiterQuote(liveSwapMint.trim(), Number(liveSwapAmount), liveSwapDirection)}
                   >
-                    {quoteBusy ? "Quoting…" : "Get Live Jupiter Quote"}
+                    {quoteBusy ? "Quoting…" : `Get Live ${liveSwapDirection === "buy" ? "Buy" : "Sell"} Quote`}
                   </button>
                 </div>
 
@@ -1651,13 +1650,13 @@ export default function Home() {
                     <div style={{ display: "flex", justifyContent: "space-between", margin: "12px 0" }}>
                       <div>
                         <span className="muted small">Pay:</span>
-                        <strong> {liveSwapAmount} SOL</strong>
+                        <strong> {liveSwapAmount} {liveSwapDirection === "buy" ? "SOL" : "tokens"}</strong>
                       </div>
                       <div style={{ textAlign: "right" }}>
                         <span className="muted small">Receive:</span>
                         <strong style={{ color: "#86efac" }}>
                           {" "}
-                          ~{compact(Number(liveQuote.outAmount) / (10 ** (liveQuote.decimals || 6)))} tokens
+                          ~{compact(Number(liveQuote.outAmount) / (10 ** liveQuote.outputDecimals))} {liveSwapDirection === "buy" ? "tokens" : "SOL"}
                         </strong>
                       </div>
                     </div>
