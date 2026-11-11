@@ -139,7 +139,7 @@ export default function PnlWorkspace({ walletAddress }: { walletAddress?: string
         </> : <>
           <div className="muted small">CONNECTED PHANTOM WALLET</div>
           <strong style={{wordBreak:"break-all"}}>{walletAddress || "Connect Phantom in Live Trading to view its transactions."}</strong>
-          {walletAddress && <div className="muted tiny" style={{marginTop:6}}>Only confirmed swaps recorded for this connected wallet are listed. A buy alone is not a realized profit or loss.</div>}
+          {walletAddress && <div className="muted tiny" style={{marginTop:6}}>Only confirmed swaps recorded for this connected wallet are listed. A buy alone is not realized PnL. Current live amounts are based on Jupiter quote amounts; exact on-chain fill, network-fee and rent reconciliation is still required before treating the result as accounting-grade.</div>}
           <label htmlFor="pnl-live-select" className="muted small" style={{display:"block",marginTop:16}}>SELECT A CONFIRMED LIVE BUY</label>
           <select id="pnl-live-select" value={selectedId} onChange={event => {setSelectedId(event.target.value);setGenerated(null);}} style={{display:"block",width:"100%",marginTop:8,padding:12,borderRadius:10,background:"var(--panel, #111827)",color:"inherit",border:"1px solid var(--border, #334155)"}}>
             <option value="">{liveBuys.length ? "Choose a confirmed live buy" : "No confirmed live buys recorded for this wallet"}</option>
