@@ -78,7 +78,7 @@ export default function XDiscoveryWorkspace() {
     <section className="panel" style={{ padding: 20, marginBottom: 16 }}>
       <h3>1 · Emerging contract mentions</h3>
       <p className="muted small">Ranked by distinct observed authors, then earliest captured mention. Convergence is not proof of organic interest or coordinated activity.</p>
-      <div className="table-wrap"><table><thead><tr><th>Mint</th><th>Unique callers</th><th>Mentions</th><th>Engagement</th><th>First observed</th><th></th></tr></thead>
+      <div className="table-wrap"><table><thead><tr><th>Mint</th><th>Unique callers</th><th>Mentions</th><th>Engagement</th><th>Earliest post time</th><th></th></tr></thead>
         <tbody>{feed.map(row => <tr key={row.mint}>
           <td className="font-mono">{row.mint}</td><td>{row.unique_callers}</td><td>{row.mentions}</td><td>{compact(row.engagement)}</td><td>{date(row.first_observed_at)}</td>
           <td><button className="button outline" onClick={() => void inspectMint(row.mint)}>Inspect callers</button></td>
@@ -87,13 +87,13 @@ export default function XDiscoveryWorkspace() {
 
     <section className="panel" style={{ padding: 20, marginBottom: 16 }}>
       <h3>2 · First observed callers for a mint</h3>
-      <p className="muted small">Enter a contract address or select one from the candidate table. “First” means first captured by this radar, not necessarily the first post published on X.</p>
+      <p className="muted small">Enter a contract address or select one from the candidate table. The earliest post timestamp in the captured recent-search sample; this is not guaranteed to be the first post published on X.</p>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         <input aria-label="Solana mint address" placeholder="Paste Solana mint address" value={mintInput} onChange={e => setMintInput(e.target.value)} style={{ flex: "1 1 320px" }}/>
         <button className="button primary" disabled={loading || !mintInput.trim()} onClick={() => void inspectMint()}>Find first callers</button>
       </div>
       {mintData && <><p className="muted small" style={{ marginTop: 12 }}>{selectedMint} · {mintData.summary?.unique_callers ?? 0} unique callers · {mintData.summary?.mentions ?? 0} captured mentions</p>
-        <div className="table-wrap"><table><thead><tr><th>Observed at</th><th>Account</th><th>Followers</th><th>Engagement change</th><th>Account created</th><th>Post</th></tr></thead>
+        <div className="table-wrap"><table><thead><tr><th>Post time</th><th>Account</th><th>Followers</th><th>Engagement change</th><th>Account created</th><th>Post</th></tr></thead>
           <tbody>{(mintData.firstCallers || []).map((row: any) => <tr key={row.tweet_id + "-" + (row.author_id || "")}>
             <td>{date(row.observed_at)}</td><td>{row.username ? "@" + row.username : row.author_id || "Unknown"}</td><td>{compact(row.followers)}</td><td>{row.initial_engagement == null || row.latest_engagement == null ? "—" : `${compact(row.initial_engagement)} → ${compact(row.latest_engagement)}`}</td><td>{date(row.account_created_at)}</td><td>{row.url ? <a href={row.url} target="_blank" rel="noreferrer">Open post ↗</a> : "—"}</td>
           </tr>)}</tbody></table>{!mintData.firstCallers?.length && <div className="empty">No captured X posts mention this mint.</div>}</div>
