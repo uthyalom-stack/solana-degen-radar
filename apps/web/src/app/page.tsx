@@ -351,7 +351,7 @@ export default function Home() {
       return;
     }
     try {
-      const [o, t, a, n, p, f, pr, bks, bts, dc, ds, en] = await Promise.all([
+      const [o, t, a, n, p, f, pr, bks, bts, dc, ds, en, performanceData] = await Promise.all([
         apiRequest<Overview>("/api/status").catch(() => null),
         apiRequest<Token[]>("/api/tokens").catch(() => []),
         apiRequest<Alert[]>("/api/alerts").catch(() => []),
@@ -364,6 +364,7 @@ export default function Home() {
         apiRequest<any[]>("/api/discovery/candidates").catch(() => []),
         apiRequest<any[]>("/api/discovery/sources").catch(() => []),
         apiRequest<any[]>("/api/discovery/narratives").catch(() => []),
+        apiRequest<any>("/api/performance").catch(() => null),
       ]);
       if (o) setOverview(o);
       setTokens(t);
@@ -377,6 +378,7 @@ export default function Home() {
       setDiscoveryCandidates(dc);
       setDiscoverySources(ds);
       setEmergingNarratives(en);
+      if (performanceData) setStreakSummary(performanceData);
       setError("");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Unable to reach Radar API");
