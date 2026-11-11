@@ -84,7 +84,7 @@ export interface SocialAdapter {
     text: string;
     url?: string;
     observedAt: string;
-    metrics?: Record<string, number>;
+    metrics?: Record<string, unknown>;
   }>>;
   checkHealth(env: Env): Promise<ProviderHealth>;
 }
