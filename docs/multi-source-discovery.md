@@ -15,7 +15,7 @@ The discovery system stores source-attributed evidence in D1. A candidate's sour
 | Cross-chain capital | Optional configured bridge-program interaction monitoring | Program interaction alone does not decode bridge direction, source chain, asset, or USD value. Wormhole/deBridge message decoding/indexer data is still required. |
 | Trading-route discovery | Bounded Jupiter mint-to-SOL quote checks | A quote is not a successful execution or a guaranteed sell. Provider errors and no-route responses remain unknown. |
 | Image similarity | Exact normalized metadata image-URL reuse detection | Experimental. This is not perceptual hashing or visual embedding similarity. |
-| X first-caller and convergence | Multi-lane official X recent search, account metadata, exact-mint mention history, earliest observed callers and distinct-author convergence | Requires X_BEARER_TOKEN and recent-search API access. Recent search is window-limited; earliest post in the captured sample is not guaranteed to be the first post on X. No caller win-rate is claimed. |
+| Search-engine-assisted X research | Dashboard-generated Google queries restricted to publicly indexed X pages | Manual research only. Results may be incomplete, delayed or stale; no X API, automated X scraping, guaranteed coverage, engagement tracking or first-caller claims. Found mints must be independently verified through market and on-chain sources. |
 | Developer/domain/community | Website, social, Telegram and GitHub URLs extracted from token metadata; creator attribution evidence | Does not yet validate domain age, repository history, developer identity, or community authenticity. |
 
 ## D1 migration
