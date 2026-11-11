@@ -525,7 +525,7 @@ async function ingestSocialObservations(
     const { mints, tickers } = extractSocialEntities(obs.text);
 
     // Persist X author + exact-mint mention evidence for first-caller and convergence analysis.
-    if (obs.source.startsWith("x:") && mints.length) {
+    if (obs.source.startsWith("x:")) {
       const authorId = String(obs.metrics?.authorId || "").trim();
       const username = String(obs.metrics?.username || "").trim().replace(/^@/, "").slice(0, 64);
       const followers = num(obs.metrics?.followers);
