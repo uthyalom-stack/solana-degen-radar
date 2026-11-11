@@ -970,6 +970,7 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
           sessionId,
           body.triggerSignal
         );
+        await PerformanceService.recordActivity(env.DB, String(sessionId), "paper_trade", buyResult.positionId);
         if (idempotencyKey) {
           await completeIdempotencyReservation(env.DB, idempotencyKey, JSON.stringify(buyResult), 201);
         }
@@ -994,6 +995,7 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
           sessionId,
           num(body.portion) ?? 1.0
         );
+        await PerformanceService.recordActivity(env.DB, String(sessionId), "paper_trade", String(body.positionId));
         if (idempotencyKey) {
           await completeIdempotencyReservation(env.DB, idempotencyKey, JSON.stringify(sellResult), 200);
         }
@@ -1010,6 +1012,7 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
     if (path === "/api/scan" && method === "POST") {
       const market = await runMarketScan(env);
       const advanced = await runMultiSourceDiscovery(env).catch(error => ({ error: String(error) }));
+      await PerformanceService.recordActivity(env.DB, "default", "market_scan");
       return json({ ...market, advancedDiscovery: advanced });
     }
 
