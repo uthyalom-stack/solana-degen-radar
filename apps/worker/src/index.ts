@@ -492,7 +492,7 @@ async function ingestSocialObservations(
     text: string;
     url?: string;
     observedAt?: string;
-    metrics?: Record<string, number>;
+    metrics?: Record<string, unknown>;
   }>,
   env?: Env
 ) {
@@ -523,6 +523,46 @@ async function ingestSocialObservations(
 
     const lower = obs.text.toLowerCase();
     const { mints, tickers } = extractSocialEntities(obs.text);
+
+    // Persist X author + exact-mint mention evidence for first-caller and convergence analysis.
+    if (obs.source.startsWith("x:") && mints.length) {
+      const authorId = String(obs.metrics?.authorId || "").trim();
+      const username = String(obs.metrics?.username || "").trim().replace(/^@/, "").slice(0, 64);
+      const followers = num(obs.metrics?.followers);
+      const verified = Number(obs.metrics?.verified) === 1 ? 1 : 0;
+      const accountCreatedRaw = String(obs.metrics?.accountCreatedAt || "");
+      const accountCreatedAt = accountCreatedRaw && !Number.isNaN(Date.parse(accountCreatedRaw))
+        ? new Date(accountCreatedRaw).toISOString()
+        : null;
+      const likes = num(obs.metrics?.likes) || 0;
+      const reposts = num(obs.metrics?.retweets) || 0;
+      const replies = num(obs.metrics?.replies) || 0;
+      const engagement = num(obs.metrics?.engagement) || 0;
+      const queryType = String(obs.metrics?.queryType || "x_recent_search").slice(0, 80);
+
+      if (authorId) {
+        await db.prepare(
+          "INSERT INTO x_social_accounts (author_id,username,account_created_at,followers,verified,first_seen_at,last_seen_at,tweets_seen) VALUES (?,?,?,?,?,?,?,1) ON CONFLICT(author_id) DO UPDATE SET username=COALESCE(excluded.username,x_social_accounts.username),account_created_at=COALESCE(x_social_accounts.account_created_at,excluded.account_created_at),followers=COALESCE(excluded.followers,x_social_accounts.followers),verified=MAX(x_social_accounts.verified,excluded.verified),last_seen_at=MAX(x_social_accounts.last_seen_at,excluded.last_seen_at),tweets_seen=x_social_accounts.tweets_seen+1"
+        ).bind(authorId, username || null, accountCreatedAt, followers, verified, observed, observed).run();
+      }
+
+      for (const mint of mints) {
+        await db.prepare(
+          "INSERT OR IGNORE INTO x_mint_mentions (id,mint,tweet_id,author_id,username,observed_at,url,engagement,likes,reposts,replies,followers,account_created_at,verified,query_type,text_snippet) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+        ).bind(
+          id(), mint, obs.sourceId, authorId || null, username || null, observed, obs.url || null,
+          engagement, likes, reposts, replies, followers, accountCreatedAt, verified, queryType, obs.text.slice(0, 500)
+        ).run();
+
+        const knownToken = await db.prepare("SELECT mint FROM tokens WHERE mint=?").bind(mint).first<any>();
+        if (knownToken) {
+          await recordDiscoveryEvidence(db, mint, "x_first_callers", obs.sourceId, "x_contract_mention",
+            authorId ? "strong" : "weak",
+            { authorId: authorId || null, username: username || null, followers, engagement, url: obs.url || null, queryType },
+            observed);
+        }
+      }
+    }
 
     for (const [themeKey, keywords] of Object.entries(DYNAMIC_THEMES)) {
       const hits = keywords.filter(k => lower.includes(k));
@@ -932,6 +972,31 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
     if (path === "/api/alerts" && method === "GET") {
       const rows = await env.DB.prepare("SELECT * FROM alerts ORDER BY created_at DESC LIMIT 100").all<any>();
       return json(rows.results || []);
+    }
+
+    // X early discovery: first observed callers and independent-account convergence.
+    if (path === "/api/social/x/early-signals" && method === "GET") {
+      const mint = String(url.searchParams.get("mint") || "").trim();
+      if (mint) {
+        const mentions = await env.DB.prepare(
+          "SELECT tweet_id,author_id,username,observed_at,url,engagement,likes,reposts,replies,followers,account_created_at,verified,query_type,text_snippet FROM x_mint_mentions WHERE mint=? ORDER BY observed_at ASC LIMIT 200"
+        ).bind(mint).all<any>();
+        const summary = await env.DB.prepare(
+          "SELECT COUNT(*) AS mentions,COUNT(DISTINCT author_id) AS unique_callers,MIN(observed_at) AS first_observed_at,MAX(observed_at) AS last_observed_at,COALESCE(SUM(engagement),0) AS engagement FROM x_mint_mentions WHERE mint=?"
+        ).bind(mint).first<any>();
+        return json({ mint, summary, firstCallers: mentions.results || [], caveat: "First observed by this radar, not necessarily the first post on X. Historical caller skill is not inferred from mention order." });
+      }
+      const rows = await env.DB.prepare(
+        "SELECT mint,COUNT(*) AS mentions,COUNT(DISTINCT author_id) AS unique_callers,MIN(observed_at) AS first_observed_at,MAX(observed_at) AS last_observed_at,COALESCE(SUM(engagement),0) AS engagement FROM x_mint_mentions WHERE julianday(observed_at)>=julianday('now','-24 hours') GROUP BY mint ORDER BY unique_callers DESC,first_observed_at ASC LIMIT 100"
+      ).all<any>();
+      return json({ candidates: rows.results || [], window: "24h", caveat: "Convergence counts distinct observed X authors; it does not prove organic coordination or predict profitability." });
+    }
+
+    if (path === "/api/social/x/callers" && method === "GET") {
+      const rows = await env.DB.prepare(
+        "SELECT a.author_id,a.username,a.account_created_at,a.followers,a.verified,a.first_seen_at,a.last_seen_at,a.tweets_seen,COUNT(DISTINCT m.mint) AS distinct_mints,COUNT(m.tweet_id) AS mint_mentions,MIN(m.observed_at) AS earliest_mint_mention FROM x_social_accounts a LEFT JOIN x_mint_mentions m ON m.author_id=a.author_id GROUP BY a.author_id ORDER BY distinct_mints DESC,mint_mentions DESC,a.last_seen_at DESC LIMIT 100"
+      ).all<any>();
+      return json({ callers: rows.results || [], caveat: "This is observed activity coverage, not a caller win-rate or reputation score. Outcome-labelled token history is required before ranking caller skill." });
     }
 
     // 6. Social Feed
