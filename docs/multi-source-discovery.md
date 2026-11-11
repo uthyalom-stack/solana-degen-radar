@@ -20,7 +20,7 @@ The discovery system stores source-attributed evidence in D1. A candidate's sour
 
 ## D1 migration
 
-Apply migrations/0007_multi_source_discovery.sql and migrations/0009_x_early_intelligence.sql before deploying a Worker build that uses the corresponding discovery features.
+Apply migrations/0007_multi_source_discovery.sql, migrations/0008_performance_streaks_journal_risk.sql, and migrations/0009_x_early_intelligence.sql in numeric order before deploying the Worker build.
 
 ## Worker configuration
 
