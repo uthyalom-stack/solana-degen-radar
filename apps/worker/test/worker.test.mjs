@@ -232,3 +232,23 @@ test("X adapter runs separate early-discovery search lanes and preserves author 
     globalThis.fetch = originalFetch;
   }
 });
+
+
+test("X adapter skips search while the D1 cooldown window is active", async () => {
+  const originalFetch = globalThis.fetch;
+  let requests = 0;
+  globalThis.fetch = async () => {
+    requests++;
+    return new Response(JSON.stringify({ data: [] }), { status: 200 });
+  };
+  try {
+    const observations = await new XAdapter().fetchObservations({
+      X_BEARER_TOKEN: "test-token",
+      DB: { prepare: () => ({ bind: () => ({ first: async () => null }) }) }
+    });
+    assert.deepEqual(observations, []);
+    assert.equal(requests, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
