@@ -116,7 +116,7 @@ export class XAdapter implements SocialAdapter {
               verified: author?.verified ? 1 : 0,
               accountCreatedAt: author?.created_at || "",
               
-              queryLane: lane.type === "launch_links" ? 1 : lane.type === "chart_links" ? 2 : lane.type === "contract_callouts" ? 3 : lane.type === "emerging_narratives" ? 4 : 5,
+              queryType: lane.type,
             },
           });
         }
