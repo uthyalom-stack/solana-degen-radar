@@ -160,7 +160,7 @@ async function runMarketScan(env: Env) {
       },observedAt);
     }
 
-    const [profileMints, boostMints, launchMints] = await Promise.all([
+    const [profileMints, boostMints, launchMints, xSocialMints] = await Promise.all([
       dexClient.getLatestProfiles().catch(e => {
         errors.push(`Profiles error: ${e}`);
         return [];
@@ -170,6 +170,8 @@ async function runMarketScan(env: Env) {
         return [];
       }),
       PumpFunDiscovery.getRecentPumpPortalLaunches(env.DB, 20).catch(() => []),
+      env.DB.prepare("SELECT mint FROM tokens WHERE source='x_social' ORDER BY first_seen_at DESC LIMIT 20")
+        .all<{ mint: string }>().then(result => (result.results || []).map(row => row.mint)).catch(() => []),
     ]);
 
     const candidates = Array.from(new Set([
@@ -177,6 +179,7 @@ async function runMarketScan(env: Env) {
       ...profileMints.slice(0, 15),
       ...boostMints.slice(0, 15),
       ...launchMints.slice(0, 10),
+      ...xSocialMints,
     ])).slice(0, 40);
 
     if (candidates.length > 0) {
@@ -567,13 +570,44 @@ async function ingestSocialObservations(
           engagement, likes, reposts, replies, followers, accountCreatedAt, verified, queryType, obs.text.slice(0, 500)
         ).run();
 
-        const knownToken = await db.prepare("SELECT mint FROM tokens WHERE mint=?").bind(mint).first<any>();
-        if (knownToken) {
-          await recordDiscoveryEvidence(db, mint, "x_first_callers", obs.sourceId, "x_contract_mention",
-            authorId ? "strong" : "weak",
-            { authorId: authorId || null, username: username || null, followers, engagement, url: obs.url || null, queryType },
-            observed);
-        }
+        // Promote an X contract mention into the shared discovery candidate pipeline.
+        // The mint is only a social lead here: DEX/on-chain checks must validate it before
+        // it is treated as a real token or considered tradable.
+        await db.prepare(
+          "INSERT OR IGNORE INTO tokens (mint,name,symbol,decimals,first_seen_at,source,metadata_json) VALUES (?,NULL,NULL,NULL,?,?,?)"
+        ).bind(
+          mint,
+          observed,
+          "x_social",
+          JSON.stringify({
+            discoveryMethod: "x_contract_mention",
+            verificationStatus: "unverified",
+            tweetId: obs.sourceId,
+            authorId: authorId || null,
+            username: username || null,
+            postUrl: obs.url || null,
+            queryType,
+          })
+        ).run();
+
+        await recordDiscoveryEvidence(
+          db,
+          mint,
+          "x_social",
+          obs.sourceId,
+          "contract_mention",
+          "weak",
+          {
+            verificationStatus: "unverified",
+            authorId: authorId || null,
+            username: username || null,
+            followers,
+            engagement,
+            url: obs.url || null,
+            queryType,
+          },
+          observed
+        );
       }
     }
 
