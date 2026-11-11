@@ -889,6 +889,10 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
     if (reservation.state === "in_progress") {
       return json({ error: "Concurrent request in progress for this idempotency key" }, 409);
     }
+
+    if (reservation.state === "unavailable") {
+      return json({ error: "Idempotency protection is unavailable; mutation was not processed" }, 503);
+    }
   }
 
   try {
@@ -1691,7 +1695,8 @@ export type IdempotencyReservationResult =
   | { state: "reserved" }
   | { state: "completed"; responseBody: string; status: number }
   | { state: "conflict"; message: string }
-  | { state: "in_progress" };
+  | { state: "in_progress" }
+  | { state: "unavailable" };
 
 async function reserveIdempotencyKey(
   db: D1Database,
@@ -1727,7 +1732,7 @@ async function reserveIdempotencyKey(
       .first<any>();
 
     if (!existing) {
-      return { state: "reserved" };
+      return { state: "in_progress" };
     }
 
     // Check payload and endpoint binding
@@ -1766,8 +1771,8 @@ async function reserveIdempotencyKey(
 
     return { state: "in_progress" };
   } catch {
-    // Fallback on schema unavailability
-    return { state: "reserved" };
+    // Fail closed: never process a mutation when the idempotency store is unavailable.
+    return { state: "unavailable" };
   }
 }
 
